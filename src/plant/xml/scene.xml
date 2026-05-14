@@ -1,0 +1,80 @@
+<mujoco model="HummingBirdScene">
+  <include file="HummingBird.xml"/>
+
+  <statistic center="0 0 0.25" extent="5.0"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.18 0.18 0.18" specular="0.1 0.1 0.1"/>
+    <rgba haze="0.35 0.45 0.35 1"/>
+    <global azimuth="-130" elevation="-35" ellipsoidinertia="false"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.55 0.70 0.85" rgb2="0.08 0.16 0.10" width="512" height="3072"/>
+    <texture type="2d" name="forest_ground_tex" builtin="checker" mark="edge" rgb1="0.10 0.18 0.09" rgb2="0.06 0.11 0.05" markrgb="0.13 0.20 0.10" width="100" height="100"/>
+    <material name="forest_ground" texture="forest_ground_tex" texuniform="true" texrepeat="20 20" reflectance="0"/>
+    <material name="tree_trunk" rgba="0.28 0.15 0.07 1"/>
+    <material name="tree_leaf" rgba="0.04 0.28 0.08 1"/>
+    <material name="tree_leaf_dark" rgba="0.02 0.18 0.05 1"/>
+    <material name="rock_mat" rgba="0.22 0.23 0.22 1"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 10" dir="0 0 -1" directional="true"/>
+    <light pos="-3 -4 5" dir="1 1 -1" directional="true" diffuse="0.35 0.32 0.25"/>
+    <camera name="overview_camera" pos="-2.8 -2.2 1.5" xyaxes="0.65 -0.76 0 0.28 0.24 0.93" fovy="45"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="forest_ground" contype="1" conaffinity="2" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
+
+    <body name="world_axis" pos="0 0 0.01">
+      <geom name="world_x_axis" type="cylinder" pos="0.35 0 0" size="0.008 0.35" quat="0.7071068 0 0.7071068 0" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      <geom name="world_y_axis" type="cylinder" pos="0 0.35 0" size="0.008 0.35" quat="0.7071068 0.7071068 0 0" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      <geom name="world_z_axis" type="cylinder" pos="0 0 0.35" size="0.008 0.35" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+      <geom name="world_x_tip" type="sphere" pos="0.72 0 0" size="0.035" rgba="1 0 0 1" contype="0" conaffinity="0"/>
+      <geom name="world_y_tip" type="sphere" pos="0 0.72 0" size="0.035" rgba="0 1 0 1" contype="0" conaffinity="0"/>
+      <geom name="world_z_tip" type="sphere" pos="0 0 0.72" size="0.035" rgba="0 0 1 1" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="tree_1" pos="3.0 2.2 0">
+      <geom name="tree_1_trunk" type="cylinder" pos="0 0 1.1" size="0.12 1.1" material="tree_trunk" contype="0" conaffinity="0"/>
+      <geom name="tree_1_leaf_1" type="sphere" pos="0 0 2.45" size="0.75" material="tree_leaf" contype="0" conaffinity="0"/>
+      <geom name="tree_1_leaf_2" type="sphere" pos="0.35 -0.20 2.18" size="0.55" material="tree_leaf_dark" contype="0" conaffinity="0"/>
+      <geom name="tree_1_leaf_3" type="sphere" pos="-0.32 0.22 2.15" size="0.52" material="tree_leaf" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="tree_2" pos="-3.2 2.5 0">
+      <geom name="tree_2_trunk" type="cylinder" pos="0 0 1.0" size="0.11 1.0" material="tree_trunk" contype="0" conaffinity="0"/>
+      <geom name="tree_2_leaf_1" type="sphere" pos="0 0 2.25" size="0.68" material="tree_leaf_dark" contype="0" conaffinity="0"/>
+      <geom name="tree_2_leaf_2" type="sphere" pos="0.30 0.25 2.02" size="0.48" material="tree_leaf" contype="0" conaffinity="0"/>
+      <geom name="tree_2_leaf_3" type="sphere" pos="-0.28 -0.22 2.00" size="0.45" material="tree_leaf" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="tree_3" pos="3.2 -2.7 0">
+      <geom name="tree_3_trunk" type="cylinder" pos="0 0 1.25" size="0.14 1.25" material="tree_trunk" contype="0" conaffinity="0"/>
+      <geom name="tree_3_leaf_1" type="sphere" pos="0 0 2.75" size="0.85" material="tree_leaf" contype="0" conaffinity="0"/>
+      <geom name="tree_3_leaf_2" type="sphere" pos="0.40 0.25 2.45" size="0.58" material="tree_leaf_dark" contype="0" conaffinity="0"/>
+      <geom name="tree_3_leaf_3" type="sphere" pos="-0.38 -0.22 2.42" size="0.55" material="tree_leaf" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="tree_4" pos="-3.4 -2.3 0">
+      <geom name="tree_4_trunk" type="cylinder" pos="0 0 0.95" size="0.10 0.95" material="tree_trunk" contype="0" conaffinity="0"/>
+      <geom name="tree_4_leaf_1" type="sphere" pos="0 0 2.12" size="0.62" material="tree_leaf_dark" contype="0" conaffinity="0"/>
+      <geom name="tree_4_leaf_2" type="sphere" pos="0.26 -0.20 1.92" size="0.43" material="tree_leaf" contype="0" conaffinity="0"/>
+      <geom name="tree_4_leaf_3" type="sphere" pos="-0.26 0.18 1.90" size="0.43" material="tree_leaf" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="tree_5" pos="0.8 4.2 0">
+      <geom name="tree_5_trunk" type="cylinder" pos="0 0 1.15" size="0.12 1.15" material="tree_trunk" contype="0" conaffinity="0"/>
+      <geom name="tree_5_leaf_1" type="sphere" pos="0 0 2.55" size="0.78" material="tree_leaf" contype="0" conaffinity="0"/>
+      <geom name="tree_5_leaf_2" type="sphere" pos="0.34 -0.22 2.27" size="0.52" material="tree_leaf_dark" contype="0" conaffinity="0"/>
+      <geom name="tree_5_leaf_3" type="sphere" pos="-0.34 0.22 2.25" size="0.52" material="tree_leaf" contype="0" conaffinity="0"/>
+    </body>
+
+    <body name="tree_6" pos="-0.7 -4.1 0">
+      <geom name="tree_6_trunk" type="cylinder" pos="0 0 1.05" size="0.11 1.05" material="tree_trunk" contype="0" conaffinity="0"/>
+      <geom name="tree_6_leaf_1" type="sphere" pos="0 0 2.35" size="0.70" material="tree_leaf_dark" contype="0" conaffinity="0"/>
+      <geom name="tree_6_leaf_2" type="sphere" pos="0.30 0.22 2.12" size="0.48" material="tree_leaf" contype="0" conaffinity="0"/>
+      <geom name="tree_6_leaf_3" type="sphere" pos="-0.30 -0.22 2.10" size="0.46" material="tree_leaf" contype="0" conaffinity="0"/>
+    </body>
+
+  </worldbody>
+</mujoco>
