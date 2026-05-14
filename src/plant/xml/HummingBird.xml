@@ -70,8 +70,8 @@
     <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 50" ctrllimited="true"/>
     <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 50" ctrllimited="true"/>
 
-    <position name="theta1_servo" joint="joint_theta1" kp="15" kv="8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
-    <position name="theta2_servo" joint="joint_theta2" kp="15" kv="8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="theta1_servo" joint="joint_theta1" kp="12" kv="4" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="theta2_servo" joint="joint_theta2" kp="12" kv="4" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
 
     <position name="phi1_servo" joint="joint_phi1" kp="12" kv="4" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
     <position name="phi2_servo" joint="joint_phi2" kp="12" kv="4" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>

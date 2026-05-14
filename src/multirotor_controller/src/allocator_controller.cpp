@@ -27,6 +27,10 @@ public:
   }
 
 private:
+  using Vector6d = Eigen::Matrix<double, 6, 1>;
+  using Vector8d = Eigen::Matrix<double, 8, 1>;
+  using Matrix68d = Eigen::Matrix<double, 6, 8>;
+
   static constexpr double Lx = 0.1861;
   static constexpr double Ly = 0.1861;
   static constexpr double d = 0.0500;
@@ -34,11 +38,11 @@ private:
   static constexpr double f_min = 1.0e-3;
   static constexpr double f_cmd_min = 1.0e-6;
   static constexpr double f_cmd_max = 50.0;
-  static constexpr double angle_limit_rad = 1.5707963267948966;
-  static constexpr double eps_cos = 1.0e-6;
-  static constexpr double check_tau_z_thrust_tol = 0.10;
-  static constexpr double check_force_tol = 5.00;
-  static constexpr double check_moment_tol = 0.50;
+  static constexpr double angle_limit_rad = 1.57;  // < 90 deg
+  static constexpr double virtual_lambda = 1.0e-4;
+  static constexpr double check_tau_z_thrust_tol = 0.50;
+  static constexpr double check_force_tol = 1.00;
+  static constexpr double check_moment_tol = 2.00;
 
   struct PlantCheckResult
   {
@@ -71,27 +75,9 @@ private:
     moment_cmd << static_cast<double>(msg->moment[0]), static_cast<double>(msg->moment[1]), static_cast<double>(msg->moment[2]);
     force_cmd << static_cast<double>(msg->force[0]), static_cast<double>(msg->force[1]), static_cast<double>(msg->force[2]);
 
-    Eigen::Vector4d B1;
-    B1 << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_cmd(2);
+    Vector8d virtual_force = calcA1(moment_cmd, force_cmd, theta_measured_, phi_measured_);
 
-    Eigen::Matrix4d A1 = calcA1(theta_measured_, phi_measured_);
-    Eigen::FullPivLU<Eigen::Matrix4d> lu_1(A1);
-
-    if (lu_1.isInvertible()) {
-      thrust_ = lu_1.solve(B1);
-    }
-    else {
-      std::cout << "[WARN] A1 singular (rank=" << lu_1.rank() << ")\nA1:\n" << A1 << "\nB1: " << B1.transpose() << std::endl;
-      thrust_ = (A1.transpose() * A1 + 1.0e-8 * Eigen::Matrix4d::Identity()).ldlt().solve(A1.transpose() * B1);
-    }
-
-    for (int i = 0; i < 4; ++i) {
-      thrust_(i) = std::clamp(thrust_(i), f_cmd_min, f_cmd_max);
-    }
-
-    //----------------------
-
-    calcA2(force_cmd(0), force_cmd(1), thrust_, theta_measured_, theta_desired_, phi_desired_);
+    calcA2(virtual_force, thrust_, theta_desired_, phi_desired_);
 
     PlantCheckResult check = checkPlantWrench(thrust_, theta_desired_, phi_desired_, moment_cmd, force_cmd);
     if (check.problem) {RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 500, "%s", check.message.c_str());}
@@ -109,179 +95,120 @@ private:
     out.u[8] = phi_desired_(2);
     out.u[9] = phi_desired_(3);
 
-    // const double f_total = std::max(0.0, -force_cmd(2));
-    // const double f_each = std::clamp(f_total / 4.0, 0.0, 30.0);
-
-    // out.u[0] = f_each;
-    // out.u[1] = f_each;
-    // out.u[2] = f_each;
-    // out.u[3] = f_each;
-
-    // out.u[4] = 0.0;
-    // out.u[5] = 0.0;
-
-    // out.u[6] = 0.0;
-    // out.u[7] = 0.0;
-    // out.u[8] = 0.0;
-    // out.u[9] = 0.0;
-
     input_publisher_->publish(out);
   }
 
-  Eigen::Matrix4d calcA1(const Eigen::Vector2d& theta, const Eigen::Vector4d& phi)
+  Vector8d calcA1(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector2d& theta, const Eigen::Vector4d& phi)
   {
-    Eigen::Matrix4d A1;
-    A1.setZero();
-
     const double theta1 = theta(0);
     const double theta2 = theta(1);
 
-    const double arm_y_14 = Ly - d * std::sin(theta1);
-    const double arm_y_23 = Ly - d * std::sin(theta2);
+    const double phi14 = 0.5 * (phi(0) + phi(3));
+    const double phi23 = 0.5 * (phi(1) + phi(2));
 
-    Eigen::Vector3d r1(+Lx, +arm_y_14, 0.0);
-    Eigen::Vector3d r2(-Lx, +arm_y_23, 0.0);
-    Eigen::Vector3d r3(-Lx, -arm_y_23, 0.0);
-    Eigen::Vector3d r4(+Lx, -arm_y_14, 0.0);
+    const double Fx14 = -std::sin(theta1) * std::cos(phi14);
+    const double Fy14 = +std::sin(phi14);
+    const double Fz14 = -std::cos(theta1) * std::cos(phi14);
 
-    for (int i = 0; i < 4; ++i) {
-      Eigen::Vector3d r_i;
-      double theta_i = 0.0;
-      double phi_i = phi(i);
-      double spin_i = 1.0;
+    const double Fx23 = -std::sin(theta2) * std::cos(phi23);
+    const double Fy23 = +std::sin(phi23);
+    const double Fz23 = -std::cos(theta2) * std::cos(phi23);
 
-      if (i == 0) {r_i = r1; theta_i = theta1; spin_i = +1.0;}
-      if (i == 1) {r_i = r2; theta_i = theta2; spin_i = -1.0;}
-      if (i == 2) {r_i = r3; theta_i = theta2; spin_i = +1.0;}
-      if (i == 3) {r_i = r4; theta_i = theta1; spin_i = -1.0;}
+    Matrix68d A1;
+    A1.setZero();
 
-      const double Fx_i = -std::sin(theta_i) * std::cos(phi_i);
-      const double Fy_i = +std::sin(phi_i);
-      const double Fz_i = -std::cos(theta_i) * std::cos(phi_i);
+    // C = [front_Fx; front_Fy; front_Fz; back_Fx; back_Fy; back_Fz; df14; df23]
+    // W = [Mx; My; Mz; Fx; Fy; Fz]
 
-      A1(0, i) = r_i(1) * Fz_i + spin_i * zeta * Fx_i;
-      A1(1, i) = -r_i(0) * Fz_i + spin_i * zeta * Fy_i;
-      A1(2, i) = spin_i * zeta * Fz_i;
-      A1(3, i) = Fz_i;
+    // Mx = (y14*Fz14 + zeta*Fx14)*df14 + (y23*Fz23 - zeta*Fx23)*df23
+    A1(0, 0) = 0.0; A1(0, 1) = 0.0; A1(0, 2) = 0.0; A1(0, 3) = 0.0; A1(0, 4) = 0.0; A1(0, 5) = 0.0;
+    A1(0, 6) = (Ly - d * std::sin(theta1)) * Fz14 + zeta * Fx14;
+    A1(0, 7) = (Ly - d * std::sin(theta2)) * Fz23 - zeta * Fx23;
+
+    // My = -Lx*front_Fz + Lx*back_Fz + zeta*Fy14*df14 - zeta*Fy23*df23
+    A1(1, 0) = 0.0; A1(1, 1) = 0.0; A1(1, 2) = -Lx;
+    A1(1, 3) = 0.0; A1(1, 4) = 0.0; A1(1, 5) = +Lx;
+    A1(1, 6) = zeta * Fy14; A1(1, 7) = -zeta * Fy23;
+
+    // Mz = Lx*front_Fy - Lx*back_Fy + (-y14*Fx14 + zeta*Fz14)*df14 + (-y23*Fx23 - zeta*Fz23)*df23
+    A1(2, 0) = 0.0; A1(2, 1) = +Lx; A1(2, 2) = 0.0;
+    A1(2, 3) = 0.0; A1(2, 4) = -Lx; A1(2, 5) = 0.0;
+    A1(2, 6) = -(Ly - d * std::sin(theta1)) * Fx14 + zeta * Fz14;
+    A1(2, 7) = -(Ly - d * std::sin(theta2)) * Fx23 - zeta * Fz23;
+
+    // Fx = front_Fx + back_Fx
+    A1(3, 0) = 1.0; A1(3, 1) = 0.0; A1(3, 2) = 0.0; A1(3, 3) = 1.0; A1(3, 4) = 0.0; A1(3, 5) = 0.0; A1(3, 6) = 0.0; A1(3, 7) = 0.0;
+
+    // Fy = front_Fy + back_Fy
+    A1(4, 0) = 0.0; A1(4, 1) = 1.0; A1(4, 2) = 0.0; A1(4, 3) = 0.0; A1(4, 4) = 1.0; A1(4, 5) = 0.0; A1(4, 6) = 0.0; A1(4, 7) = 0.0;
+
+    // Fz = front_Fz + back_Fz
+    A1(5, 0) = 0.0; A1(5, 1) = 0.0; A1(5, 2) = 1.0; A1(5, 3) = 0.0; A1(5, 4) = 0.0; A1(5, 5) = 1.0; A1(5, 6) = 0.0; A1(5, 7) = 0.0;
+    
+    Vector6d B1;
+    B1 << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_cmd(0), force_cmd(1), force_cmd(2);
+
+    Eigen::Matrix<double, 6, 6> solve_matrix = A1 * A1.transpose() + virtual_lambda * virtual_lambda * Eigen::Matrix<double, 6, 6>::Identity();
+
+    Vector8d virtual_force;
+    virtual_force.setZero();
+
+    Eigen::FullPivLU<Eigen::Matrix<double, 6, 6>> lu_1(solve_matrix);
+
+    if (lu_1.isInvertible()) {
+      virtual_force = A1.transpose() * lu_1.solve(B1);
     }
-
-    return A1;
-  }
-
-  void calcA2(double Fx_cmd, double Fy_cmd, const Eigen::Vector4d& thrust, const Eigen::Vector2d& theta_measured, Eigen::Vector2d& theta_out, Eigen::Vector4d& phi_out)
-  {
-    const double theta1_measured = theta_measured(0);
-    const double theta2_measured = theta_measured(1);
-
-    const double arm_y_14 = Ly - d * std::sin(theta1_measured);
-    const double arm_y_23 = Ly - d * std::sin(theta2_measured);
-
-    Eigen::Vector3d r1(+Lx, +arm_y_14, 0.0);
-    Eigen::Vector3d r2(-Lx, +arm_y_23, 0.0);
-    Eigen::Vector3d r3(-Lx, -arm_y_23, 0.0);
-    Eigen::Vector3d r4(+Lx, -arm_y_14, 0.0);
-
-    const double f1 = std::max(thrust(0), f_min);
-    const double f2 = std::max(thrust(1), f_min);
-    const double f3 = std::max(thrust(2), f_min);
-    const double f4 = std::max(thrust(3), f_min);
-
-    const double f14 = std::max(f1 + f4, f_min);
-    const double f23 = std::max(f2 + f3, f_min);
-
-    Eigen::Matrix4d A2;
-    A2.setZero();
-
-    A2(0, 0) = 0.0;
-    A2(0, 1) = 0.0;
-    A2(0, 2) = 1.0;
-    A2(0, 3) = 1.0;
-
-    A2(1, 0) = 1.0;
-    A2(1, 1) = 1.0;
-    A2(1, 2) = 0.0;
-    A2(1, 3) = 0.0;
-
-    A2(2, 0) = (r1(0) * f1 + r4(0) * f4) / f14;
-    A2(2, 1) = (r2(0) * f2 + r3(0) * f3) / f23;
-    A2(2, 2) = -(r1(1) * f1 + r4(1) * f4) / f14;
-    A2(2, 3) = -(r2(1) * f2 + r3(1) * f3) / f23;
-
-    A2(3, 0) = 1.0e-4;
-    A2(3, 1) = -1.0e-4;
-    A2(3, 2) = 1.0e-4;
-    A2(3, 3) = -1.0e-4;
-
-    Eigen::Vector4d B2;
-    B2 << Fx_cmd, Fy_cmd, 0.0, 0.0;
-
-    Eigen::Vector4d C2_des;
-    C2_des.setZero();
-
-    Eigen::FullPivLU<Eigen::Matrix4d> lu_2(A2);
-    if (lu_2.isInvertible()) {C2_des = lu_2.solve(B2);}
     else {
-      std::cout << "[WARN] A2 singular (rank=" << lu_2.rank() << ")\nA2:\n" << A2 << "\nB2: " << B2.transpose() << "\nthrust: " << thrust.transpose() << std::endl;
-      C2_des = (A2.transpose() * A2 + 1.0e-8 * Eigen::Matrix4d::Identity()).ldlt().solve(A2.transpose() * B2);
+      std::cout << "[WARN] A1 virtual singular (rank=" << lu_1.rank() << ")\nA1:\n" << A1 << "\nB1: " << B1.transpose() << std::endl;
+      virtual_force = A1.transpose() * solve_matrix.ldlt().solve(B1);
     }
 
-    convertVirtualForceToAngle(C2_des, thrust, theta_out, phi_out);
+    return virtual_force;
   }
 
-  void convertVirtualForceToAngle(const Eigen::Vector4d& C2_des, const Eigen::Vector4d& thrust, Eigen::Vector2d& theta_out, Eigen::Vector4d& phi_out)
+  void calcA2(const Vector8d& virtual_force, Eigen::Vector4d& thrust_out, Eigen::Vector2d& theta_out, Eigen::Vector4d& phi_out)
   {
-    const double f1 = std::max(thrust(0), f_min);
-    const double f2 = std::max(thrust(1), f_min);
-    const double f3 = std::max(thrust(2), f_min);
-    const double f4 = std::max(thrust(3), f_min);
+    Eigen::Vector3d front_force;
+    Eigen::Vector3d back_force;
 
-    const double f14 = std::max(f1 + f4, f_min);
-    const double f23 = std::max(f2 + f3, f_min);
+    front_force << virtual_force(0), virtual_force(1), virtual_force(2);
+    back_force << virtual_force(3), virtual_force(4), virtual_force(5);
 
-    double Fy_14 = C2_des(0);
-    double Fy_23 = C2_des(1);
-    double Fx_14 = C2_des(2);
-    double Fx_23 = C2_des(3);
+    double front_force_norm = front_force.norm();
+    double back_force_norm = back_force.norm();
 
-    double Fx_direction_14 = Fx_14 / f14;
-    double Fy_direction_14 = Fy_14 / f14;
-    double Fx_direction_23 = Fx_23 / f23;
-    double Fy_direction_23 = Fy_23 / f23;
+    double safe_front_force_norm = std::max(front_force_norm, f_min);
+    double safe_back_force_norm = std::max(back_force_norm, f_min);
 
-    Fx_direction_14 = std::clamp(Fx_direction_14, -1.0, 1.0);
-    Fy_direction_14 = std::clamp(Fy_direction_14, -1.0, 1.0);
-    Fx_direction_23 = std::clamp(Fx_direction_23, -1.0, 1.0);
-    Fy_direction_23 = std::clamp(Fy_direction_23, -1.0, 1.0);
+    Eigen::Vector3d front_direction = front_force / safe_front_force_norm;
+    Eigen::Vector3d back_direction = back_force / safe_back_force_norm;
 
-    double normalized_horizontal_14 = std::sqrt(Fx_direction_14 * Fx_direction_14 + Fy_direction_14 * Fy_direction_14);
-    double normalized_horizontal_23 = std::sqrt(Fx_direction_23 * Fx_direction_23 + Fy_direction_23 * Fy_direction_23);
+    if (front_force_norm <= f_min) {front_direction << 0.0, 0.0, -1.0;}
+    if (back_force_norm <= f_min) {back_direction << 0.0, 0.0, -1.0;}
 
-    if (normalized_horizontal_14 > 1.0) {
-      Fx_direction_14 = Fx_direction_14 / normalized_horizontal_14;
-      Fy_direction_14 = Fy_direction_14 / normalized_horizontal_14;
-    }
+    double phi14 = std::asin(std::clamp(front_direction(1), -1.0, 1.0));
+    double phi23 = std::asin(std::clamp(back_direction(1), -1.0, 1.0));
 
-    if (normalized_horizontal_23 > 1.0) {
-      Fx_direction_23 = Fx_direction_23 / normalized_horizontal_23;
-      Fy_direction_23 = Fy_direction_23 / normalized_horizontal_23;
-    }
-
-    double phi14 = std::asin(Fy_direction_14);
-    double phi23 = std::asin(Fy_direction_23);
-
-    double cos_phi14 = std::cos(phi14);
-    double cos_phi23 = std::cos(phi23);
-
-    if (std::abs(cos_phi14) < eps_cos) {cos_phi14 = (cos_phi14 >= 0.0) ? eps_cos : -eps_cos;}
-    if (std::abs(cos_phi23) < eps_cos) {cos_phi23 = (cos_phi23 >= 0.0) ? eps_cos : -eps_cos;}
-
-    double theta1 = std::asin(std::clamp(-Fx_direction_14 / cos_phi14, -1.0, 1.0));
-    double theta2 = std::asin(std::clamp(-Fx_direction_23 / cos_phi23, -1.0, 1.0));
+    double theta1 = std::atan2(-front_direction(0), -front_direction(2));
+    double theta2 = std::atan2(-back_direction(0), -back_direction(2));
 
     theta1 = std::clamp(theta1, -angle_limit_rad, angle_limit_rad);
     theta2 = std::clamp(theta2, -angle_limit_rad, angle_limit_rad);
     phi14 = std::clamp(phi14, -angle_limit_rad, angle_limit_rad);
     phi23 = std::clamp(phi23, -angle_limit_rad, angle_limit_rad);
+
+    double df14 = std::clamp(virtual_force(6), -safe_front_force_norm + f_min, safe_front_force_norm - f_min);
+    double df23 = std::clamp(virtual_force(7), -safe_back_force_norm + f_min, safe_back_force_norm - f_min);
+
+    const double f1 = 0.5 * (safe_front_force_norm + df14);
+    const double f4 = 0.5 * (safe_front_force_norm - df14);
+    const double f2 = 0.5 * (safe_back_force_norm + df23);
+    const double f3 = 0.5 * (safe_back_force_norm - df23);
+
+    thrust_out(0) = std::clamp(f1, f_cmd_min, f_cmd_max);
+    thrust_out(1) = std::clamp(f2, f_cmd_min, f_cmd_max);
+    thrust_out(2) = std::clamp(f3, f_cmd_min, f_cmd_max);
+    thrust_out(3) = std::clamp(f4, f_cmd_min, f_cmd_max);
 
     theta_out(0) = theta1;
     theta_out(1) = theta2;
@@ -296,13 +223,10 @@ private:
   {
     PlantCheckResult result;
 
-    const double arm_y_14 = Ly - d * std::sin(theta(0));
-    const double arm_y_23 = Ly - d * std::sin(theta(1));
-
-    Eigen::Vector3d r1(+Lx, +arm_y_14, 0.0);
-    Eigen::Vector3d r2(-Lx, +arm_y_23, 0.0);
-    Eigen::Vector3d r3(-Lx, -arm_y_23, 0.0);
-    Eigen::Vector3d r4(+Lx, -arm_y_14, 0.0);
+    Eigen::Vector3d r1(+Lx, +(Ly - d * std::sin(theta(0))), 0.0);
+    Eigen::Vector3d r2(-Lx, +(Ly - d * std::sin(theta(1))), 0.0);
+    Eigen::Vector3d r3(-Lx, -(Ly - d * std::sin(theta(1))), 0.0);
+    Eigen::Vector3d r4(+Lx, -(Ly - d * std::sin(theta(0))), 0.0);
 
     for (int i = 0; i < 4; ++i) {
       Eigen::Vector3d r_i;
@@ -330,22 +254,36 @@ private:
     result.moment_error = moment_cmd - result.moment_actual;
     result.force_error = force_cmd - result.force_actual;
 
-    result.problem = (!result.moment_actual.allFinite()) || (!result.force_actual.allFinite()) || (std::abs(result.tau_z_thrust) > check_tau_z_thrust_tol) || (result.force_error.norm() > check_force_tol) || (result.moment_error.norm() > check_moment_tol);
+    const double err_m_norm = result.moment_error.norm();
+    const double err_f_norm = result.force_error.norm();
+
+    result.problem = (!result.moment_actual.allFinite()) || (!result.force_actual.allFinite()) || (err_f_norm > check_force_tol) || (err_m_norm > check_moment_tol);
 
     if (result.problem) {
       std::ostringstream ss;
-      ss << "[CA CHECK]"
-        << "\n  tau_z_thrust  = " << result.tau_z_thrust
-        << "\n  tau_z_reaction= " << result.tau_z_reaction
-        << "\n  moment_cmd    = " << moment_cmd.transpose()
-        << "\n  moment_actual = " << result.moment_actual.transpose()
-        << "\n  moment_error  = " << result.moment_error.transpose()
-        << "\n  force_cmd     = " << force_cmd.transpose()
-        << "\n  force_actual  = " << result.force_actual.transpose()
-        << "\n  force_error   = " << result.force_error.transpose()
-        << "\n  thrust        = " << thrust.transpose()
-        << "\n  theta         = " << theta.transpose()
-        << "\n  phi           = " << phi.transpose();
+      ss << "\n[CA CHECK]"
+         << "\n  error norm"
+         << "\n    err_m_norm = " << err_m_norm << " Nm"
+         << "\n    err_f_norm = " << err_f_norm << " N"
+         << "\n"
+         << "\n  moment [Nm]"
+         << "\n    cmd    = " << moment_cmd.transpose()
+         << "\n    actual = " << result.moment_actual.transpose()
+         << "\n    error  = " << result.moment_error.transpose()
+         << "\n"
+         << "\n  force [N]"
+         << "\n    cmd    = " << force_cmd.transpose()
+         << "\n    actual = " << result.force_actual.transpose()
+         << "\n    error  = " << result.force_error.transpose()
+         << "\n"
+         << "\n  actuator"
+         << "\n    thrust = " << thrust.transpose()
+         << "\n    theta  = " << theta.transpose()
+         << "\n    phi    = " << phi.transpose()
+         << "\n"
+         << "\n  yaw split"
+         << "\n    tau_z_thrust   = " << result.tau_z_thrust << " Nm"
+         << "\n    tau_z_reaction = " << result.tau_z_reaction << " Nm";
 
       result.message = ss.str();
     }
