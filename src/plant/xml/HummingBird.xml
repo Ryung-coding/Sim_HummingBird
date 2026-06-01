@@ -65,10 +65,10 @@
   </worldbody>
 
   <actuator>
-    <general name="BLDC1_thrust" site="prop1_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 50" ctrllimited="true"/>
-    <general name="BLDC2_thrust" site="prop2_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 50" ctrllimited="true"/>
-    <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 50" ctrllimited="true"/>
-    <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 50" ctrllimited="true"/>
+    <general name="BLDC1_thrust" site="prop1_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC2_thrust" site="prop2_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 100" ctrllimited="true"/>
 
     <position name="theta1_servo" joint="joint_theta1" kp="12" kv="4" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
     <position name="theta2_servo" joint="joint_theta2" kp="12" kv="4" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
