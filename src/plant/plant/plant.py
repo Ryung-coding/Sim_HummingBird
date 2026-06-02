@@ -101,6 +101,7 @@ class PlantRosNode(Node):
         xml_path = os.path.join(pkg_share, "xml", "scene.xml")
 
         self.model = mujoco.MjModel.from_xml_path(xml_path)
+        self.apply_servo_parameters()
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = 1.0 / PHYSICS_HZ
 
@@ -173,6 +174,48 @@ class PlantRosNode(Node):
             raise RuntimeError(f"sensor not found: {name}")
 
         return sid
+
+    def actuator_id(self, name):
+        aid = mujoco.mj_name2id(
+            self.model,
+            mujoco.mjtObj.mjOBJ_ACTUATOR,
+            name
+        )
+
+        if aid < 0:
+            raise RuntimeError(f"actuator not found: {name}")
+
+        return aid
+
+    def apply_position_servo_gains(self, actuator_names, kp, kv):
+        for name in actuator_names:
+            aid = self.actuator_id(name)
+            self.model.actuator_gainprm[aid, 0] = kp
+            self.model.actuator_biasprm[aid, 1] = -kp
+            self.model.actuator_biasprm[aid, 2] = -kv
+
+    def apply_servo_parameters(self):
+        theta_kp = self.declare_parameter("theta_servo_kp", 12.0).value
+        theta_kv = self.declare_parameter("theta_servo_kv", 4.0).value
+        phi_kp = self.declare_parameter("phi_servo_kp", 12.0).value
+        phi_kv = self.declare_parameter("phi_servo_kv", 4.0).value
+
+        self.apply_position_servo_gains(
+            ["theta1_servo", "theta2_servo"],
+            theta_kp,
+            theta_kv
+        )
+        self.apply_position_servo_gains(
+            ["phi1_servo", "phi2_servo", "phi3_servo", "phi4_servo"],
+            phi_kp,
+            phi_kv
+        )
+
+        self.get_logger().info(
+            "servo gains: "
+            f"theta kp={theta_kp:.3f}, kv={theta_kv:.3f}, "
+            f"phi kp={phi_kp:.3f}, kv={phi_kv:.3f}"
+        )
 
     def sensing_state(self, sid):
         adr = self.s_adr[sid]

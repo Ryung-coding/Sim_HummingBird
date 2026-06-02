@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             'plant = plant.plant:main',
             'multirotor_viewer = plant.hummingbird_viewer:main',
+            'tracking_report = plant.tracking_report:main',
         ],
     },
 )

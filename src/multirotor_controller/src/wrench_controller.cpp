@@ -6,21 +6,25 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <string>
+#include <vector>
 
 class WrenchController : public rclcpp::Node
 {
 public:
   WrenchController() : rclcpp::Node("wrench_controller")
   {
-    const double KP_POS[3] = {40.0, 40.0, 40.0};
-    const double KI_POS[3] = {0.0, 0.0, 0.01};
-    const double KD_POS[3] = {40.0, 40.0, 40.0};
-    const double I_MIN_POS = -50.0, I_MAX_POS = 50.0;
+    const auto kp_pos = vec3Param("kp_pos", {40.0, 40.0, 40.0});
+    const auto ki_pos = vec3Param("ki_pos", {0.0, 0.0, 0.01});
+    const auto kd_pos = vec3Param("kd_pos", {40.0, 40.0, 40.0});
+    const double i_min_pos = scalarParam("i_min_pos", -50.0);
+    const double i_max_pos = scalarParam("i_max_pos", 50.0);
 
-    const double KP_ATT[3] = {20.0, 20.0, 10.0};
-    const double KI_ATT[3] = {0.0, 0.0, 0.0};
-    const double KD_ATT[3] = {10.0, 10.0, 10.0};
-    const double I_MIN_ATT = -10.0, I_MAX_ATT = 10.0;
+    const auto kp_att = vec3Param("kp_att", {20.0, 20.0, 10.0});
+    const auto ki_att = vec3Param("ki_att", {0.0, 0.0, 0.0});
+    const auto kd_att = vec3Param("kd_att", {10.0, 10.0, 10.0});
+    const double i_min_att = scalarParam("i_min_att", -10.0);
+    const double i_max_att = scalarParam("i_max_att", 10.0);
 
     auto init_pid = [](double kp, double ki, double kd, double i_min, double i_max) -> std::function<double(double,double,double,double)>
     {
@@ -37,13 +41,25 @@ public:
       };
     };
 
-    pid_pos_[0] = init_pid(KP_POS[0], KI_POS[0], KD_POS[0], I_MIN_POS, I_MAX_POS);
-    pid_pos_[1] = init_pid(KP_POS[1], KI_POS[1], KD_POS[1], I_MIN_POS, I_MAX_POS);
-    pid_pos_[2] = init_pid(KP_POS[2], KI_POS[2], KD_POS[2], I_MIN_POS, I_MAX_POS);
+    pid_pos_[0] = init_pid(kp_pos[0], ki_pos[0], kd_pos[0], i_min_pos, i_max_pos);
+    pid_pos_[1] = init_pid(kp_pos[1], ki_pos[1], kd_pos[1], i_min_pos, i_max_pos);
+    pid_pos_[2] = init_pid(kp_pos[2], ki_pos[2], kd_pos[2], i_min_pos, i_max_pos);
 
-    pid_att_[0] = init_pid(KP_ATT[0], KI_ATT[0], KD_ATT[0], I_MIN_ATT, I_MAX_ATT);
-    pid_att_[1] = init_pid(KP_ATT[1], KI_ATT[1], KD_ATT[1], I_MIN_ATT, I_MAX_ATT);
-    pid_att_[2] = init_pid(KP_ATT[2], KI_ATT[2], KD_ATT[2], I_MIN_ATT, I_MAX_ATT);
+    pid_att_[0] = init_pid(kp_att[0], ki_att[0], kd_att[0], i_min_att, i_max_att);
+    pid_att_[1] = init_pid(kp_att[1], ki_att[1], kd_att[1], i_min_att, i_max_att);
+    pid_att_[2] = init_pid(kp_att[2], ki_att[2], kd_att[2], i_min_att, i_max_att);
+
+    RCLCPP_INFO(
+      this->get_logger(),
+      "PID gains: kp_pos=[%.3f %.3f %.3f], ki_pos=[%.3f %.3f %.3f], kd_pos=[%.3f %.3f %.3f], "
+      "kp_att=[%.3f %.3f %.3f], ki_att=[%.3f %.3f %.3f], kd_att=[%.3f %.3f %.3f]",
+      kp_pos[0], kp_pos[1], kp_pos[2],
+      ki_pos[0], ki_pos[1], ki_pos[2],
+      kd_pos[0], kd_pos[1], kd_pos[2],
+      kp_att[0], kp_att[1], kp_att[2],
+      ki_att[0], ki_att[1], ki_att[2],
+      kd_att[0], kd_att[1], kd_att[2]
+    );
 
     sub_cmd_ = this->create_subscription<multirotor_interfaces::msg::Cmd>(
       "/cmd",
@@ -68,6 +84,28 @@ public:
   }
 
 private:
+  std::vector<double> vec3Param(
+    const std::string & name,
+    const std::vector<double> & default_value
+  )
+  {
+    const auto value = this->declare_parameter<std::vector<double>>(name, default_value);
+    if (value.size() != 3) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "parameter '%s' must have 3 values, using default",
+        name.c_str()
+      );
+      return default_value;
+    }
+    return value;
+  }
+
+  double scalarParam(const std::string & name, double default_value)
+  {
+    return this->declare_parameter<double>(name, default_value);
+  }
+
   void onCmd(const multirotor_interfaces::msg::Cmd::SharedPtr msg)
   {
     // cmd convention: z-down position command [m], attitude command [rad]

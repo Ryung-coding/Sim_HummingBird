@@ -4,8 +4,11 @@
 #include <multirotor_interfaces/msg/cmd.hpp>
 
 static constexpr int RATE_HZ = 400;
-static constexpr double HOVER_SEC = 5.0;
-static constexpr double HOVER_ALT = -2.0;
+static constexpr double SIM_DURATION_SEC = 30.0;
+static constexpr double TRANSFER_SEC = 5.0;
+static constexpr double TRAJ_RADIUS = 2.0;
+static constexpr double MIN_ALT = 1.0;
+static constexpr double ALT_AMPLITUDE = 0.5;
 static constexpr double TILT_ANGLE = 70.0 * M_PI / 180.0;
 
 class PositionCmd : public rclcpp::Node {
@@ -22,31 +25,42 @@ public:
   }
 
 private:
+  double smoothStep(double x)
+  {
+    x = std::fmax(0.0, std::fmin(1.0, x));
+    return x * x * (3.0 - 2.0 * x);
+  }
+
   void onTick()
   {
     using multirotor_interfaces::msg::Cmd;
     Cmd msg;
 
     double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+    if (t > SIM_DURATION_SEC) {
+      t = SIM_DURATION_SEC;
+    }
 
-    if (t < HOVER_SEC) {
-      msg.pos_cmd[0] = 2.0;
+    if (t < TRANSFER_SEC) {
+      const double a = smoothStep(t / TRANSFER_SEC);
+
+      msg.pos_cmd[0] = TRAJ_RADIUS * a;
       msg.pos_cmd[1] = 0.0;
-      msg.pos_cmd[2] = HOVER_ALT;
+      msg.pos_cmd[2] = -MIN_ALT * a;
 
       msg.att_cmd[0] = 0.0;
       msg.att_cmd[1] = 0.0;
       msg.att_cmd[2] = 0.0;
     }
     else {
-      double tm = t - HOVER_SEC;
+      double tm = t - TRANSFER_SEC;
       double w = 2.0 * M_PI / 20.0;
       double s = std::sin(w * tm);
       double c = std::cos(w * tm);
 
-      msg.pos_cmd[0] = 2.0 * c;
-      msg.pos_cmd[1] = 2.0 * s;
-      msg.pos_cmd[2] = HOVER_ALT + 0.5 * s;
+      msg.pos_cmd[0] = TRAJ_RADIUS * c;
+      msg.pos_cmd[1] = TRAJ_RADIUS * s;
+      msg.pos_cmd[2] = -(MIN_ALT + 0.5 * ALT_AMPLITUDE * (1.0 + s));
 
       msg.att_cmd[0] = 0.5 * TILT_ANGLE * s;
       msg.att_cmd[1] = TILT_ANGLE * s;
