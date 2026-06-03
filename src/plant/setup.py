@@ -22,7 +22,7 @@ setup(
     entry_points={
         'console_scripts': [
             'plant = plant.plant:main',
-            'multirotor_viewer = plant.hummingbird_viewer:main',
+            'multirotor_viewer = plant.multirotor_viewer:main',
         ],
     },
 )

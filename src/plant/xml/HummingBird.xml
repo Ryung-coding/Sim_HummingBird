@@ -11,7 +11,7 @@
   <worldbody>
     <body name="body" pos="0 0 0.075">
       <freejoint name="root"/>
-      <inertial pos="0 0 0" quat="1 0 0 0" mass="9.62" diaginertia="0.055 0.055 0.090"/>
+      <inertial pos="0 0 0" quat="1 0 0 0" mass="4.62" diaginertia="0.055 0.055 0.090"/>
       <geom name="body_geom" type="mesh" mesh="body_mesh" rgba="0.62 0.64 0.66 1" contype="0" conaffinity="0"/>
       <geom name="landing_foot_fl" type="sphere" pos="0.10 0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
       <geom name="landing_foot_fr" type="sphere" pos="0.10 -0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
@@ -22,18 +22,22 @@
       <geom name="front_camera_body" type="box" pos="0.2061 0 0.02" size="0.015 0.025 0.012" rgba="0.02 0.02 0.02 1" contype="0" conaffinity="0"/>
       <geom name="front_camera_lens" type="cylinder" pos="0.224 0 0.02" size="0.009 0.004" quat="0.7071068 0 0.7071068 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
 
-      <body name="front_arm" pos="0.1861 0 0" euler="3.141592653589793 0 0">
+      <body name="arm1" pos="0.1861 0 0" euler="3.141592653589793 0 0">
         <joint name="joint_theta1" type="hinge" axis="0 1 0" pos="0 0 0" range="-3.141592653589793 3.141592653589793" limited="true" damping="0.5" armature="0.03"/>
-        <inertial pos="0 0 0" quat="1 0 0 0" mass="0.12" diaginertia="0.002 0.002 0.002"/>
-        <geom name="front_arm_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
-
+        <inertial pos="0 0 0" quat="1 0 0 0" mass="0.06" diaginertia="0.001 0.001 0.001"/>
+        <geom name="arm1_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
         <body name="BLDC1" pos="0 0.1861 -0.05">
           <joint name="joint_phi1" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
           <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
           <geom name="prop1_geom" type="mesh" mesh="prop_mesh" rgba="0.42 0.42 0.42 1" contype="0" conaffinity="0"/>
           <site name="prop1_site" pos="0 0 0" size="0.004" type="sphere" rgba="1 0 0 0"/>
         </body>
+      </body>
 
+      <body name="arm4" pos="0.1861 0 0" euler="3.141592653589793 0 0">
+        <joint name="joint_theta4" type="hinge" axis="0 1 0" pos="0 0 0" range="-3.141592653589793 3.141592653589793" limited="true" damping="0.5" armature="0.03"/>
+        <inertial pos="0 0 0" quat="1 0 0 0" mass="0.06" diaginertia="0.001 0.001 0.001"/>
+        <geom name="arm4_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 0" contype="0" conaffinity="0"/>
         <body name="BLDC4" pos="0 -0.1861 -0.05">
           <joint name="joint_phi4" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
           <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
@@ -42,18 +46,22 @@
         </body>
       </body>
 
-      <body name="back_arm" pos="-0.1861 0 0" euler="3.141592653589793 0 0">
+      <body name="arm2" pos="-0.1861 0 0" euler="3.141592653589793 0 0">
         <joint name="joint_theta2" type="hinge" axis="0 1 0" pos="0 0 0" range="-3.141592653589793 3.141592653589793" limited="true" damping="0.5" armature="0.03"/>
-        <inertial pos="0 0 0" quat="1 0 0 0" mass="0.12" diaginertia="0.002 0.002 0.002"/>
-        <geom name="back_arm_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
-
+        <inertial pos="0 0 0" quat="1 0 0 0" mass="0.06" diaginertia="0.001 0.001 0.001"/>
+        <geom name="arm2_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 0" contype="0" conaffinity="0"/>
         <body name="BLDC2" pos="0 0.1861 -0.05">
           <joint name="joint_phi2" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
           <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
           <geom name="prop2_geom" type="mesh" mesh="prop_mesh" rgba="0.42 0.42 0.42 1" contype="0" conaffinity="0"/>
           <site name="prop2_site" pos="0 0 0" size="0.004" type="sphere" rgba="1 0 0 0"/>
         </body>
+      </body>
 
+      <body name="arm3" pos="-0.1861 0 0" euler="3.141592653589793 0 0">
+        <joint name="joint_theta3" type="hinge" axis="0 1 0" pos="0 0 0" range="-3.141592653589793 3.141592653589793" limited="true" damping="0.5" armature="0.03"/>
+        <inertial pos="0 0 0" quat="1 0 0 0" mass="0.06" diaginertia="0.001 0.001 0.001"/>
+        <geom name="arm3_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
         <body name="BLDC3" pos="0 -0.1861 -0.05">
           <joint name="joint_phi3" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
           <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
@@ -65,18 +73,20 @@
   </worldbody>
 
   <actuator>
-    <general name="BLDC1_thrust" site="prop1_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 100" ctrllimited="true"/>
-    <general name="BLDC2_thrust" site="prop2_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 100" ctrllimited="true"/>
-    <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 100" ctrllimited="true"/>
-    <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC1_thrust" site="prop1_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC2_thrust" site="prop2_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 +0.02" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 -0.02" ctrlrange="0 100" ctrllimited="true"/>
 
-    <position name="theta1_servo" joint="joint_theta1" kp="12" kv="4" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
-    <position name="theta2_servo" joint="joint_theta2" kp="12" kv="4" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="theta1_servo" joint="joint_theta1" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="theta2_servo" joint="joint_theta2" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="theta3_servo" joint="joint_theta3" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="theta4_servo" joint="joint_theta4" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
 
-    <position name="phi1_servo" joint="joint_phi1" kp="12" kv="4" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
-    <position name="phi2_servo" joint="joint_phi2" kp="12" kv="4" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
-    <position name="phi3_servo" joint="joint_phi3" kp="12" kv="4" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
-    <position name="phi4_servo" joint="joint_phi4" kp="12" kv="4" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
+    <position name="phi1_servo" joint="joint_phi1" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
+    <position name="phi2_servo" joint="joint_phi2" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
+    <position name="phi3_servo" joint="joint_phi3" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
+    <position name="phi4_servo" joint="joint_phi4" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
   </actuator>
 
   <sensor>
@@ -88,7 +98,9 @@
 
     <jointpos name="encoder_theta1" joint="joint_theta1"/>
     <jointpos name="encoder_theta2" joint="joint_theta2"/>
-    
+    <jointpos name="encoder_theta3" joint="joint_theta3"/>
+    <jointpos name="encoder_theta4" joint="joint_theta4"/>
+
     <jointpos name="encoder_phi1" joint="joint_phi1"/>
     <jointpos name="encoder_phi2" joint="joint_phi2"/>
     <jointpos name="encoder_phi3" joint="joint_phi3"/>

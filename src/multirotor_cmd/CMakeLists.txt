@@ -8,8 +8,17 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(multirotor_interfaces REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 add_executable(position_cmd src/position_cmd.cpp)
+
+target_include_directories(position_cmd PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+target_link_libraries(position_cmd
+  Eigen3::Eigen
+)
 
 ament_target_dependencies(position_cmd
   rclcpp

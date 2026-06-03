@@ -7,11 +7,27 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(Eigen3 REQUIRED)
 find_package(multirotor_interfaces REQUIRED)
+find_package(Eigen3 REQUIRED)
 
 add_executable(wrench_controller src/wrench_controller.cpp)
 add_executable(allocator_controller src/allocator_controller.cpp)
+
+target_include_directories(wrench_controller PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+target_include_directories(allocator_controller PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+
+target_link_libraries(wrench_controller
+  Eigen3::Eigen
+)
+
+target_link_libraries(allocator_controller
+  Eigen3::Eigen
+)
 
 ament_target_dependencies(wrench_controller
   rclcpp
@@ -21,14 +37,6 @@ ament_target_dependencies(wrench_controller
 ament_target_dependencies(allocator_controller
   rclcpp
   multirotor_interfaces
-)
-
-target_link_libraries(wrench_controller
-  Eigen3::Eigen
-)
-
-target_link_libraries(allocator_controller
-  Eigen3::Eigen
 )
 
 install(TARGETS

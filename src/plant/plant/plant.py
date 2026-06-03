@@ -21,18 +21,18 @@ from multirotor_interfaces.msg import Input, MultirotorState
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
 
-USE_DELAY = False
 USE_NOISE = True
 
-DELAY_TIME = 0.01
+SIG_POS = 0.005
+SIG_VEL = 0.03
+SIG_GYRO = 0.01
+SIG_ACC = 0.10
+SIG_ENCODER = 0.002
 
-SIG_POS = 0.005       # 5 mm
-SIG_VEL = 0.03        # 3 cm/s
-SIG_GYRO = 0.01       # 0.57 deg/s
-SIG_ACC = 0.10        # 0.1 m/s^2
-SIG_ENCODER = 0.002   # 0.11 deg
-
-N_CTRL = 10
+N_THRUST = 4
+N_THETA = 4
+N_PHI = 4
+N_CTRL = N_THRUST + N_THETA + N_PHI
 
 USE_FIXED_CAMERA = False
 VIEW_CAMERA_NAME = "front_camera"
@@ -41,24 +41,6 @@ VIEW_CAMERA_NAME = "front_camera"
 def to_zdown(v):
     return np.array([v[0], -v[1], -v[2]], dtype=float)
 
-
-def quat_to_rpy(q):
-    w, x, y, z = q
-
-    yaw = math.atan2(
-        2.0 * (w * z + x * y),
-        1.0 - 2.0 * (y * y + z * z)
-    )
-
-    s = max(-1.0, min(1.0, 2.0 * (w * y - z * x)))
-    pitch = math.asin(s)
-
-    roll = math.atan2(
-        2.0 * (w * x + y * z),
-        1.0 - 2.0 * (x * x + y * y)
-    )
-
-    return np.array([roll, pitch, yaw], dtype=float)
 
 def quat_to_rotmat(q):
     w, x, y, z = q
@@ -104,6 +86,9 @@ class PlantRosNode(Node):
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = 1.0 / PHYSICS_HZ
 
+        if self.model.nu != N_CTRL:
+            self.get_logger().warn(f"model.nu is {self.model.nu}, but N_CTRL is {N_CTRL}")
+
         self.sid_imu_quat = self.sensor_id("imu_quat")
         self.sid_imu_gyro = self.sensor_id("imu_gyro")
         self.sid_imu_acc = self.sensor_id("imu_acc")
@@ -112,6 +97,9 @@ class PlantRosNode(Node):
 
         self.sid_encoder_theta1 = self.sensor_id("encoder_theta1")
         self.sid_encoder_theta2 = self.sensor_id("encoder_theta2")
+        self.sid_encoder_theta3 = self.sensor_id("encoder_theta3")
+        self.sid_encoder_theta4 = self.sensor_id("encoder_theta4")
+
         self.sid_encoder_phi1 = self.sensor_id("encoder_phi1")
         self.sid_encoder_phi2 = self.sensor_id("encoder_phi2")
         self.sid_encoder_phi3 = self.sensor_id("encoder_phi3")
@@ -123,10 +111,6 @@ class PlantRosNode(Node):
         self.ctrl_recv = np.zeros(N_CTRL, dtype=float)
         self.ctrl = np.zeros(N_CTRL, dtype=float)
 
-        self.delay_len = max(1, int(DELAY_TIME * PHYSICS_HZ))
-        self.delay_buf = np.zeros((self.delay_len, N_CTRL), dtype=float)
-        self.delay_idx = 0
-
         self.prev_pub_t = None
         self.prev_linvel_zdown = None
         self.prev_gyro = None
@@ -134,40 +118,20 @@ class PlantRosNode(Node):
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
 
-        self.sub_input = self.create_subscription(
-            Input,
-            "/input",
-            self.input_callback,
-            10
-        )
+        self.sub_input = self.create_subscription(Input, "/input", self.input_callback, 10)
+        self.pub_state = self.create_publisher(MultirotorState, "/multirotor_state", 10)
 
-        self.pub_state = self.create_publisher(
-            MultirotorState,
-            "/multirotor_state",
-            10
-        )
-
-        self.viewer_thread = threading.Thread(
-            target=self.viewer_loop,
-            daemon=True
-        )
-
-        self.sim_thread = threading.Thread(
-            target=self.sim_loop,
-            daemon=True
-        )
+        self.viewer_thread = threading.Thread(target=self.viewer_loop, daemon=True)
+        self.sim_thread = threading.Thread(target=self.sim_loop, daemon=True)
 
         self.viewer_thread.start()
         self.sim_thread.start()
 
-        self.get_logger().info("state publish convention: z-down, [x, y, z] = [x_mj, -y_mj, -z_mj]")
+        self.get_logger().info("state convention: z-down, [x, y, z] = [x_mj, -y_mj, -z_mj]")
+        self.get_logger().info("input order: f[4], theta[4], phi[4] -> ctrl[0:4], ctrl[4:8], ctrl[8:12]")
 
     def sensor_id(self, name):
-        sid = mujoco.mj_name2id(
-            self.model,
-            mujoco.mjtObj.mjOBJ_SENSOR,
-            name
-        )
+        sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
 
         if sid < 0:
             raise RuntimeError(f"sensor not found: {name}")
@@ -178,89 +142,56 @@ class PlantRosNode(Node):
         adr = self.s_adr[sid]
         dim = self.s_dim[sid]
 
-        return np.array(
-            self.data.sensordata[adr:adr + dim],
-            dtype=float
-        )
-
-    def delay_step(self):
-        if not USE_DELAY:
-            return self.ctrl_recv.copy()
-
-        self.delay_buf[self.delay_idx] = self.ctrl_recv
-        self.delay_idx = (self.delay_idx + 1) % self.delay_len
-
-        return self.delay_buf[self.delay_idx].copy()
+        return np.array(self.data.sensordata[adr:adr + dim], dtype=float)
 
     def input_callback(self, msg):
-        u = np.asarray(msg.u, dtype=float)
+        f = np.asarray(msg.f, dtype=float)
+        theta = np.asarray(msg.theta, dtype=float)
+        phi = np.asarray(msg.phi, dtype=float)
 
-        if u.shape[0] != N_CTRL:
-            self.get_logger().warn(
-                f"input size must be {N_CTRL}, but got {u.shape[0]}"
-            )
+        if f.shape[0] != N_THRUST:
+            self.get_logger().warn(f"f size must be {N_THRUST}, but got {f.shape[0]}")
+            return
+
+        if theta.shape[0] != N_THETA:
+            self.get_logger().warn(f"theta size must be {N_THETA}, but got {theta.shape[0]}")
+            return
+
+        if phi.shape[0] != N_PHI:
+            self.get_logger().warn(f"phi size must be {N_PHI}, but got {phi.shape[0]}")
             return
 
         with self.lock:
-            self.ctrl_recv = u.copy()
+            self.ctrl_recv[0:4] = f
+            self.ctrl_recv[4:8] = theta
+            self.ctrl_recv[8:12] = phi
 
     def apply_control(self):
-        self.data.ctrl[0] = self.ctrl[0]
-        self.data.ctrl[1] = self.ctrl[1]
-        self.data.ctrl[2] = self.ctrl[2]
-        self.data.ctrl[3] = self.ctrl[3]
-
-        self.data.ctrl[4] = self.ctrl[4]
-        self.data.ctrl[5] = self.ctrl[5]
-
-        self.data.ctrl[6] = self.ctrl[6]
-        self.data.ctrl[7] = self.ctrl[7]
-        self.data.ctrl[8] = self.ctrl[8]
-        self.data.ctrl[9] = self.ctrl[9]
+        self.data.ctrl[:N_CTRL] = self.ctrl[:N_CTRL]
 
     def make_state_msg(self, now):
         imu_quat = self.sensing_state(self.sid_imu_quat)
-
-        imu_gyro = add_noise(
-            self.sensing_state(self.sid_imu_gyro),
-            SIG_GYRO
-        )
-
-        imu_acc = add_noise(
-            self.sensing_state(self.sid_imu_acc),
-            SIG_ACC
-        )
-
-        pos_mj = add_noise(
-            self.sensing_state(self.sid_body_pos),
-            SIG_POS
-        )
-
-        vel_mj = add_noise(
-            self.sensing_state(self.sid_body_linvel),
-            SIG_VEL
-        )
+        imu_gyro = add_noise(self.sensing_state(self.sid_imu_gyro), SIG_GYRO)
+        imu_acc = add_noise(self.sensing_state(self.sid_imu_acc), SIG_ACC)
+        pos_mj = add_noise(self.sensing_state(self.sid_body_pos), SIG_POS)
+        vel_mj = add_noise(self.sensing_state(self.sid_body_linvel), SIG_VEL)
 
         pos = to_zdown(pos_mj)
         vel = to_zdown(vel_mj)
 
-        theta = np.array(
-            [
-                self.sensing_state(self.sid_encoder_theta1)[0],
-                self.sensing_state(self.sid_encoder_theta2)[0],
-            ],
-            dtype=float
-        )
+        theta = np.array([
+            self.sensing_state(self.sid_encoder_theta1)[0],
+            self.sensing_state(self.sid_encoder_theta2)[0],
+            self.sensing_state(self.sid_encoder_theta3)[0],
+            self.sensing_state(self.sid_encoder_theta4)[0],
+        ], dtype=float)
 
-        phi = np.array(
-            [
-                self.sensing_state(self.sid_encoder_phi1)[0],
-                self.sensing_state(self.sid_encoder_phi2)[0],
-                self.sensing_state(self.sid_encoder_phi3)[0],
-                self.sensing_state(self.sid_encoder_phi4)[0],
-            ],
-            dtype=float
-        )
+        phi = np.array([
+            self.sensing_state(self.sid_encoder_phi1)[0],
+            self.sensing_state(self.sid_encoder_phi2)[0],
+            self.sensing_state(self.sid_encoder_phi3)[0],
+            self.sensing_state(self.sid_encoder_phi4)[0],
+        ], dtype=float)
 
         theta = add_noise(theta, SIG_ENCODER)
         phi = add_noise(phi, SIG_ENCODER)
@@ -280,6 +211,7 @@ class PlantRosNode(Node):
         self.prev_gyro = imu_gyro.copy()
 
         msg = MultirotorState()
+
         msg.pos = pos.tolist()
         msg.vel = vel.tolist()
         msg.acc = acc.tolist()
@@ -306,7 +238,7 @@ class PlantRosNode(Node):
             now = time.perf_counter()
 
             with self.lock:
-                self.ctrl = self.delay_step()
+                self.ctrl = self.ctrl_recv.copy()
                 self.apply_control()
 
                 while now >= next_step:
@@ -328,24 +260,16 @@ class PlantRosNode(Node):
             self.get_logger().info("viewer camera: free camera")
             return
 
-        cam_id = mujoco.mj_name2id(
-            self.model,
-            mujoco.mjtObj.mjOBJ_CAMERA,
-            VIEW_CAMERA_NAME
-        )
+        cam_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_CAMERA, VIEW_CAMERA_NAME)
 
         if cam_id < 0:
-            self.get_logger().warn(
-                f"camera not found: {VIEW_CAMERA_NAME}"
-            )
+            self.get_logger().warn(f"camera not found: {VIEW_CAMERA_NAME}")
             return
 
         viewer.cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
         viewer.cam.fixedcamid = cam_id
 
-        self.get_logger().info(
-            f"viewer camera: {VIEW_CAMERA_NAME}"
-        )
+        self.get_logger().info(f"viewer camera: {VIEW_CAMERA_NAME}")
 
     def viewer_loop(self):
         try:
