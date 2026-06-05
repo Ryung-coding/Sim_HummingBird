@@ -263,7 +263,7 @@ inline TargetCMD takeApple(double t)
 inline TargetCMD positionTuningPath(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double SEG_SEC = 3.0;
+  static constexpr double SEG_SEC = 1.0;
   static constexpr double XY = 0.5;
   static constexpr double Z = 3.0;
 
@@ -391,6 +391,87 @@ inline TargetCMD agilePath(double t)
   cmd.yaw = 0.5 * M_PI * std::sin(p);
 
   return cmd;
+}
+
+inline TargetCMD positionTrack(double t)
+{
+  static constexpr double HOVER_SEC = 1.0;
+  static constexpr double Z = 1.0;
+  static constexpr double distance_x = 1.0; // [m]
+  static constexpr double distance_y = 1.0; // [m]
+
+  static constexpr double vel_x = 1.0; // [m/s]
+  static constexpr double vel_y = 1.0; // [m/s]
+
+  const double X_SEG_SEC = distance_x / vel_x;
+  const double Y_SEG_SEC = distance_y / vel_y;
+
+  TargetCMD cmd;
+
+  if (t < HOVER_SEC) {
+    const double a = t / HOVER_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.x = 0.0;
+    cmd.y = 0.0;
+    cmd.z = Z * s;
+    cmd.roll = 0.0;
+    cmd.pitch = 60.0 * 3.141592/180.0 * s;
+    cmd.yaw = 0.0;
+
+    return cmd;
+  }
+
+  const double tm = t - HOVER_SEC;
+  const double cycle = 2.0 * X_SEG_SEC + 2.0 * Y_SEG_SEC;
+  const double tc = std::fmod(tm, cycle);
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+  cmd.roll = 0.0;
+  cmd.pitch = 60.0 * 3.141592/180.0;
+  cmd.yaw = 0.0;
+
+  if (tc < X_SEG_SEC) {
+    const double a = tc / X_SEG_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.x = distance_x * s;
+    cmd.y = 0.0;
+
+    return cmd;
+  }
+
+  if (tc < X_SEG_SEC + Y_SEG_SEC) {
+    const double a = (tc - X_SEG_SEC) / Y_SEG_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.x = distance_x;
+    cmd.y = distance_y * s;
+
+    return cmd;
+  }
+
+  if (tc < 2.0 * X_SEG_SEC + Y_SEG_SEC) {
+    const double a = (tc - X_SEG_SEC - Y_SEG_SEC) / X_SEG_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.x = distance_x * (1.0 - s);
+    cmd.y = distance_y;
+
+    return cmd;
+  }
+
+  {
+    const double a = (tc - 2.0 * X_SEG_SEC - Y_SEG_SEC) / Y_SEG_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.x = 0.0;
+    cmd.y = distance_y * (1.0 - s);
+
+    return cmd;
+  }
 }
 
 // Control Allocation utils ===========================================

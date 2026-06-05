@@ -32,9 +32,9 @@ static constexpr double d = 0.0500;
 static constexpr double zeta = 0.0200;
 
 // position controller -----------------------------------------------
-static constexpr std::array<double, 3> Kp_pos = {50.0, 50.0, 50.0};
+static constexpr std::array<double, 3> Kp_pos = {100.0, 100.0, 50.0};
 static constexpr std::array<double, 3> Ki_pos = {0.10, 0.10, 0.10};
-static constexpr std::array<double, 3> Kd_pos = {30.0, 30.0, 30.0};
+static constexpr std::array<double, 3> Kd_pos = {40.0, 40.0, 30.0};
 
 static constexpr std::array<double, 3> pos_i_sat = {30.0, 30.0, 30.0};
 static constexpr std::array<double, 3> force_body_sat = {90.0, 60.0, 90.0};
