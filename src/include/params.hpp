@@ -40,8 +40,8 @@ static constexpr std::array<double, 3> pos_i_sat = {30.0, 30.0, 30.0};
 static constexpr std::array<double, 3> force_body_sat = {90.0, 60.0, 90.0};
 
 // attitude controller -----------------------------------------------
-static constexpr std::array<double, 3> kR = {40.0, 40.0, 5.0};
-static constexpr std::array<double, 3> kW = {7.0, 7.0, 2.0};
+static constexpr std::array<double, 3> kR = {40.0, 40.0, 10.0};
+static constexpr std::array<double, 3> kW = {7.0, 7.0, 5.0};
 static constexpr std::array<double, 3> kI = {0.1, 0.1, 0.1};
 
 static constexpr std::array<double, 3> att_i_sat = {1.0, 1.0, 1.0};
@@ -56,6 +56,22 @@ static constexpr double f_cmd_max = 100.0;
 static constexpr double theta_limit_rad = 1.57;
 static constexpr double phi_limit_rad = 0.523;
 static constexpr double virtual_lambda = 1.0e-4;
+
+// allocation ADA parameters ---
+static constexpr double ada_k_j = 20.0;             // [1/s], w_dot_des = k_j(w_d - w_now)
+static constexpr double ada_lambda_j = 1.0e-3;      // [-], damped inverse regularization
+
+static constexpr double ada_f_dot_max = 40.0;       // [N/s]
+static constexpr double ada_phi_dot_max = 3.0;      // [rad/s]
+static constexpr double ada_theta_dot_max = 3.0;    // [rad/s]
+
+static constexpr double ada_k_star_f = 2.0;         // [1/s], total thrust balancing
+static constexpr double ada_k_star_phi = 1.0;       // [1/s], roll-coordinated phi recovery
+static constexpr double ada_k_star_theta = 1.0;     // [1/s], pitch-coordinated theta recovery
+
+static constexpr double ada_tau_act_f = 1.0 / 30.0;       // [s]
+static constexpr double ada_tau_act_phi = 1.0 / 25.0;     // [s]
+static constexpr double ada_tau_act_theta = 1.0 / 25.0;   // [s]
 
 // allocation check tolerance ---
 static constexpr double check_force_tol = 1.00;
