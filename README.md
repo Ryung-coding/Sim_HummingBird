@@ -86,7 +86,7 @@ If the terminal still prints old underlay warnings after deleting `install`, ope
 ```bash
 unset AMENT_PREFIX_PATH
 unset CMAKE_PREFIX_PATH
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 ```
 
 ---
