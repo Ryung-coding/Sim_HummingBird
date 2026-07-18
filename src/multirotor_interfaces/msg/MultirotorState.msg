@@ -6,6 +6,7 @@ float64[3] vel       # [m/s]
 float64[3] acc       # [m/s^2]
 
 float64[3] rpy       # [roll, pitch, yaw] [rad]
+float64[4] quat      # z-down body attitude quaternion [w, x, y, z]
 float64[3] w_rpy     # [w_roll, w_pitch, w_yaw] [rad/s]
 float64[3] a_rpy     # [a_roll, a_pitch, a_yaw] [rad/s^2]
 

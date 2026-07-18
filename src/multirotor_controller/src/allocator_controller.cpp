@@ -22,6 +22,8 @@ public:
     att_cmd_.setZero();
     theta_measured_.setZero();
     phi_measured_.setZero();
+    theta_prev_.setZero();
+    phi_prev_.setZero();
   }
 
 private:
@@ -51,9 +53,12 @@ private:
     moment_cmd << static_cast<double>(msg->moment[0]), static_cast<double>(msg->moment[1]), static_cast<double>(msg->moment[2]);
     force_cmd << static_cast<double>(msg->force[0]), static_cast<double>(msg->force[1]), static_cast<double>(msg->force[2]);
 
-    // const auto alloc = utils::allocation_P2T2(moment_cmd, force_cmd, theta_measured_, phi_measured_);
-    // const auto alloc = utils::allocation_P4T4(moment_cmd, force_cmd, theta_measured_, phi_measured_);
-    const auto alloc = utils::allocation_P2T2_ADA(moment_cmd, force_cmd, att_cmd_, theta_measured_, phi_measured_);
+    const Eigen::Vector4d theta_used = use_previous_theta_phi_ ? theta_prev_ : theta_measured_;
+    const Eigen::Vector4d phi_used = use_previous_theta_phi_ ? phi_prev_ : phi_measured_;
+
+    const auto alloc = utils::allocation_P2T2(moment_cmd, force_cmd, theta_used, phi_used);
+    // const auto alloc = utils::allocation_P4T4(moment_cmd, force_cmd, theta_used, phi_used);
+    // const auto alloc = utils::allocation_P2T2_ADA(moment_cmd, force_cmd, att_cmd_, theta_used, phi_used);
     const auto check = utils::checkAllocation(alloc, moment_cmd, force_cmd);
 
     if (check.problem) RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 500, "%s", check.message.c_str());
@@ -84,6 +89,9 @@ private:
     out.phi[2] = alloc.phi(2);
     out.phi[3] = alloc.phi(3);
 
+    theta_prev_ = alloc.theta;
+    phi_prev_ = alloc.phi;
+
     input_publisher_->publish(out);
   }
 
@@ -95,6 +103,9 @@ private:
   Eigen::Vector3d att_cmd_;
   Eigen::Vector4d theta_measured_;
   Eigen::Vector4d phi_measured_;
+  Eigen::Vector4d theta_prev_;
+  Eigen::Vector4d phi_prev_;
+  bool use_previous_theta_phi_{false};
 };
 
 int main(int argc, char** argv)

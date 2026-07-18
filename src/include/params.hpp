@@ -53,8 +53,8 @@ static constexpr double ER_NORM_MAX = 1.5;
 static constexpr double f_min = 1.0e-3;
 static constexpr double f_cmd_min = 1.0e-6;
 static constexpr double f_cmd_max = 100.0;
-static constexpr double theta_limit_rad = 1.57;
-static constexpr double phi_limit_rad = 0.523;
+static constexpr double theta_limit_rad = M_PI;
+static constexpr double phi_limit_rad = M_PI/6;
 static constexpr double virtual_lambda = 1.0e-4;
 
 // allocation ADA parameters ---
@@ -65,9 +65,10 @@ static constexpr double ada_f_dot_max = 40.0;       // [N/s]
 static constexpr double ada_phi_dot_max = 3.0;      // [rad/s]
 static constexpr double ada_theta_dot_max = 3.0;    // [rad/s]
 
-static constexpr double ada_k_star_f = 2.0;         // [1/s], total thrust balancing
-static constexpr double ada_k_star_phi = 1.0;       // [1/s], roll-coordinated phi recovery
-static constexpr double ada_k_star_theta = 1.0;     // [1/s], pitch-coordinated theta recovery
+static constexpr double ada_k_star_f = 0.0;         // [1/s], front/back pair-sum thrust balancing
+static constexpr double ada_k_star_phi = 0.5;       // [1/s], roll-coordinated phi recovery
+static constexpr double ada_k_star_theta = 0.0;     // [1/s], pitch-coordinated theta recovery
+static constexpr double ada_k_star_theta_diff = 1.0;  // [1/s], weak front/back theta coordination
 
 static constexpr double ada_tau_act_f = 1.0 / 30.0;       // [s]
 static constexpr double ada_tau_act_phi = 1.0 / 25.0;     // [s]

@@ -29,7 +29,8 @@ private:
     // const auto cmd = utils::trackApple(t);
     // const auto cmd = utils::takeApple(t);
     // const auto cmd = utils::positionTuningPath(t);
-    const auto cmd = utils::attitudeTuningPath(t);
+    // const auto cmd = utils::attitudeTuningPath(t);
+    const auto cmd = utils::steppedAttitudePath(t);
     // const auto cmd = utils::agilePath(t);
     // const auto cmd = utils::positionTrack(t);
 

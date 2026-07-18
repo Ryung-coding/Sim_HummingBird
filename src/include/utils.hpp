@@ -61,6 +61,7 @@ struct AllocationCheck {
   std::string message;
 };
 
+
 // Math utils ========================================================
 inline Eigen::Matrix3d hat(const Eigen::Vector3d& v)
 {
@@ -92,6 +93,11 @@ inline Eigen::Matrix3d diag3(const std::array<double, 3>& a)
   return m;
 }
 
+inline double meanAngle(double a, double b)
+{
+  return std::atan2(std::sin(a) + std::sin(b), std::cos(a) + std::cos(b));
+}
+
 inline Eigen::Vector3d clampVec3(const Eigen::Vector3d& x, const Eigen::Vector3d& lim)
 {
   Eigen::Vector3d y;
@@ -118,6 +124,30 @@ inline Eigen::Matrix3d rpyToRot(const Eigen::Vector3d& rpy)
   R << cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr,
        sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr,
            -sp,                  cp * sr,                  cp * cr;
+
+  return R;
+}
+
+inline Eigen::Matrix3d quatToRot(const Eigen::Vector4d& q_in)
+{
+  Eigen::Vector4d q = q_in;
+  const double n = q.norm();
+
+  if (n < 1.0e-9) {
+    return Eigen::Matrix3d::Identity();
+  }
+
+  q /= n;
+
+  const double w = q(0);
+  const double x = q(1);
+  const double y = q(2);
+  const double z = q(3);
+
+  Eigen::Matrix3d R;
+  R << 1.0 - 2.0 * (y * y + z * z),       2.0 * (x * y - w * z),       2.0 * (x * z + w * y),
+             2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z),       2.0 * (y * z - w * x),
+             2.0 * (x * z - w * y),       2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y);
 
   return R;
 }
@@ -323,11 +353,11 @@ inline TargetCMD positionTuningPath(double t)
 inline TargetCMD attitudeTuningPath(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double PITCH_SEC = 10.0;
-  static constexpr double YAW_SEC = 0.1;
+  static constexpr double TUNE_SEC = 20.0;
   static constexpr double Z = 1.0;
+  static constexpr double ROLL_AMP = 20.0 * M_PI / 180.0;
   static constexpr double PITCH_AMP = 70.0 * M_PI / 180.0;
-  static constexpr double YAW_AMP = 0.0 * M_PI / 180.0;
+  static constexpr double YAW_AMP = 90.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
@@ -345,9 +375,9 @@ inline TargetCMD attitudeTuningPath(double t)
     return cmd;
   }
 
-  const double tm = t - HOVER_SEC;
-  const double cycle = PITCH_SEC + YAW_SEC;
-  const double tc = std::fmod(tm, cycle);
+  const double tm = std::fmod(t - HOVER_SEC, 3.0 * TUNE_SEC);
+  const double axis_t = std::fmod(tm, TUNE_SEC);
+  const double w = 2.0 * M_PI / TUNE_SEC;
 
   cmd.x = 0.0;
   cmd.y = 0.0;
@@ -356,14 +386,12 @@ inline TargetCMD attitudeTuningPath(double t)
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  if (tc < PITCH_SEC) {
-    const double w = 2.0 * M_PI / PITCH_SEC;
-    cmd.pitch = PITCH_AMP * std::sin(w * tc);
-  }
-  else {
-    const double ty = tc - PITCH_SEC;
-    const double w = 2.0 * M_PI / YAW_SEC;
-    cmd.yaw = YAW_AMP * std::sin(w * ty);
+  if (tm < TUNE_SEC) {
+    cmd.pitch = PITCH_AMP * std::sin(w * axis_t);
+  } else if (tm < 2.0 * TUNE_SEC) {
+    cmd.yaw = YAW_AMP * std::sin(w * axis_t);
+  } else {
+    cmd.roll = ROLL_AMP * std::sin(w * axis_t);
   }
 
   return cmd;
@@ -483,6 +511,94 @@ inline TargetCMD positionTrack(double t)
   }
 }
 
+inline TargetCMD steppedAttitudePath(double t)
+{
+  static constexpr double HOVER_SEC = 2.0;
+  static constexpr double ZERO_HOLD_SEC = 2.0;
+  static constexpr double RAMP_SEC = 1.0;
+  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double Z = 1.0;
+
+  static constexpr double SWITCH_DEG = 60.0;
+  static constexpr double FIRST_STEP_DEG = 10.0;
+  static constexpr double SECOND_STEP_DEG = 1.0;
+  static constexpr double MAX_DEG = 90.0;
+  static constexpr double DEG2RAD = M_PI / 180.0;
+
+  static constexpr int FIRST_STAGE_COUNT =
+      static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
+
+  TargetCMD cmd;
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  if (t < HOVER_SEC) {
+    const double a = t / HOVER_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.z = Z * s;
+
+    return cmd;
+  }
+
+  const double tm = t - HOVER_SEC;
+
+  if (tm < ZERO_HOLD_SEC) {
+    return cmd;
+  }
+
+  const double ts = tm - ZERO_HOLD_SEC;
+  const double stage_sec = RAMP_SEC + HOLD_SEC;
+  const int stage = static_cast<int>(std::floor(ts / stage_sec));
+  const double stage_t = std::fmod(ts, stage_sec);
+
+  double start_deg;
+  double target_deg;
+
+  if (stage < FIRST_STAGE_COUNT) {
+    start_deg = stage * FIRST_STEP_DEG;
+    target_deg = start_deg + FIRST_STEP_DEG;
+  }
+  else {
+    const int second_stage = stage - FIRST_STAGE_COUNT;
+
+    start_deg =
+        SWITCH_DEG + second_stage * SECOND_STEP_DEG;
+
+    target_deg =
+        start_deg + SECOND_STEP_DEG;
+  }
+
+  start_deg = std::min(start_deg, MAX_DEG);
+  target_deg = std::min(target_deg, MAX_DEG);
+
+  const double start_angle = start_deg * DEG2RAD;
+  const double target_angle = target_deg * DEG2RAD;
+
+  if (start_deg >= MAX_DEG) {
+    cmd.pitch = MAX_DEG * DEG2RAD;
+    return cmd;
+  }
+
+  if (stage_t < RAMP_SEC) {
+    const double a = stage_t / RAMP_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.pitch =
+        start_angle + (target_angle - start_angle) * s;
+  }
+  else {
+    cmd.pitch = target_angle;
+  }
+
+  return cmd;
+}
+
 // Control Allocation utils ===========================================
 inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& theta_measured, const Eigen::Vector4d& phi_measured)
 {
@@ -490,8 +606,8 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
   using Vector8d = Eigen::Matrix<double, 8, 1>;
   using Matrix68d = Eigen::Matrix<double, 6, 8>;
 
-  const double theta_front = 0.5 * (theta_measured(0) + theta_measured(3));
-  const double theta_back = 0.5 * (theta_measured(1) + theta_measured(2));
+  const double theta_front = meanAngle(theta_measured(0), theta_measured(3));
+  const double theta_back = meanAngle(theta_measured(1), theta_measured(2));
 
   const double phi14 = 0.5 * (phi_measured(0) + phi_measured(3));
   const double phi23 = 0.5 * (phi_measured(1) + phi_measured(2));
@@ -515,20 +631,20 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
 
   A(0, 2) = front_y;
   A(0, 5) = back_y;
-  A(0, 6) = params::Ly * front_ez + params::zeta * front_ex;
-  A(0, 7) = params::Ly * back_ez - params::zeta * back_ex;
+  A(0, 6) = params::Ly * front_ez - params::zeta * front_ex;
+  A(0, 7) = params::Ly * back_ez + params::zeta * back_ex;
 
   A(1, 2) = -front_x;
   A(1, 5) = -back_x;
-  A(1, 6) = params::zeta * front_ey;
-  A(1, 7) = -params::zeta * back_ey;
+  A(1, 6) = -params::zeta * front_ey;
+  A(1, 7) = params::zeta * back_ey;
 
   A(2, 0) = -front_y;
   A(2, 1) = front_x;
   A(2, 3) = -back_y;
   A(2, 4) = back_x;
-  A(2, 6) = -params::Ly * front_ex + params::zeta * front_ez;
-  A(2, 7) = -params::Ly * back_ex - params::zeta * back_ez;
+  A(2, 6) = -params::Ly * front_ex - params::zeta * front_ez;
+  A(2, 7) = -params::Ly * back_ex + params::zeta * back_ez;
 
   A(3, 0) = 1.0;
   A(3, 3) = 1.0;
@@ -590,6 +706,7 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
   out.phi(2) = phi23_cmd;
   out.phi(3) = phi14_cmd;
 
+
   return out;
 }
 
@@ -618,7 +735,7 @@ inline AllocationOutput allocation_P4T4(const Eigen::Vector3d& moment_cmd, const
          r(2), 0.0, -r(0),
          -r(1), r(0), 0.0;
 
-    B += spin * params::zeta * Eigen::Matrix3d::Identity();
+    B -= spin * params::zeta * Eigen::Matrix3d::Identity();
 
     A.block<3, 3>(0, 3 * i) = B;
     A.block<3, 3>(3, 3 * i) = Eigen::Matrix3d::Identity();
@@ -653,6 +770,7 @@ inline AllocationOutput allocation_P4T4(const Eigen::Vector3d& moment_cmd, const
     out.phi(i) = phi;
   }
 
+
   return out;
 }
 
@@ -672,8 +790,8 @@ inline AllocationOutput allocation_P2T2_ADA(const Eigen::Vector3d& moment_cmd, c
 
   // P2T2 measured pair angles
   // phi_f=phi1=phi4, phi_b=phi2=phi3, theta_f=theta1=theta4, theta_b=theta2=theta3
-  const double theta_f_meas = 0.5 * (theta_measured(0) + theta_measured(3));
-  const double theta_b_meas = 0.5 * (theta_measured(1) + theta_measured(2));
+  const double theta_f_meas = meanAngle(theta_measured(0), theta_measured(3));
+  const double theta_b_meas = meanAngle(theta_measured(1), theta_measured(2));
   const double phi_f_meas = 0.5 * (phi_measured(0) + phi_measured(3));
   const double phi_b_meas = 0.5 * (phi_measured(1) + phi_measured(2));
 
@@ -722,20 +840,20 @@ inline AllocationOutput allocation_P2T2_ADA(const Eigen::Vector3d& moment_cmd, c
 
   A(0, 2) = y_f;
   A(0, 5) = y_b;
-  A(0, 6) = params::Ly * efz + params::zeta * efx;
-  A(0, 7) = params::Ly * ebz - params::zeta * ebx;
+  A(0, 6) = params::Ly * efz - params::zeta * efx;
+  A(0, 7) = params::Ly * ebz + params::zeta * ebx;
 
   A(1, 2) = -x_f;
   A(1, 5) = -x_b;
-  A(1, 6) = params::zeta * efy;
-  A(1, 7) = -params::zeta * eby;
+  A(1, 6) = -params::zeta * efy;
+  A(1, 7) = params::zeta * eby;
 
   A(2, 0) = -y_f;
   A(2, 1) = x_f;
   A(2, 3) = -y_b;
   A(2, 4) = x_b;
-  A(2, 6) = -params::Ly * efx + params::zeta * efz;
-  A(2, 7) = -params::Ly * ebx - params::zeta * ebz;
+  A(2, 6) = -params::Ly * efx - params::zeta * efz;
+  A(2, 7) = -params::Ly * ebx + params::zeta * ebz;
 
   A(3, 0) = 1.0;
   A(3, 3) = 1.0;
@@ -824,12 +942,12 @@ inline AllocationOutput allocation_P2T2_ADA(const Eigen::Vector3d& moment_cmd, c
   Vector8d q_dot_star;
   q_dot_star.setZero();
 
-  const double f_ref = 0.25 * force_cmd.norm();
+  const double ds = s_f - s_b;
 
-  q_dot_star(0) += -params::ada_k_star_f * (f1 - f_ref);
-  q_dot_star(1) += -params::ada_k_star_f * (f2 - f_ref);
-  q_dot_star(2) += -params::ada_k_star_f * (f3 - f_ref);
-  q_dot_star(3) += -params::ada_k_star_f * (f4 - f_ref);
+  q_dot_star(0) += -params::ada_k_star_f * ds;
+  q_dot_star(1) +=  params::ada_k_star_f * ds;
+  q_dot_star(2) +=  params::ada_k_star_f * ds;
+  q_dot_star(3) += -params::ada_k_star_f * ds;
 
   const double phi_nav = std::clamp(att_cmd(0), -params::phi_limit_rad, params::phi_limit_rad);
   const double theta_nav = std::clamp(att_cmd(1), -params::theta_limit_rad, params::theta_limit_rad);
@@ -838,6 +956,11 @@ inline AllocationOutput allocation_P2T2_ADA(const Eigen::Vector3d& moment_cmd, c
   q_dot_star(5) += -params::ada_k_star_phi * (phi_b - phi_nav);
   q_dot_star(6) += -params::ada_k_star_theta * (theta_f - theta_nav);
   q_dot_star(7) += -params::ada_k_star_theta * (theta_b - theta_nav);
+
+  const double dtheta_fb = theta_f - theta_b;
+
+  q_dot_star(6) += -params::ada_k_star_theta_diff * dtheta_fb;
+  q_dot_star(7) +=  params::ada_k_star_theta_diff * dtheta_fb;
 
   // q_dot_ADA = J_dagger w_dot_des + (I_8 - J_dagger J) q_dot_star
   const Matrix88d N_J = Matrix88d::Identity() - J_dagger * J;
@@ -899,7 +1022,7 @@ inline AllocationCheck checkAllocation(const AllocationOutput& alloc, const Eige
     r_i << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), 0.0;
 
     const Eigen::Vector3d force_i = alloc.f(i) * e_i;
-    const Eigen::Vector3d moment_i = r_i.cross(force_i) + spin * params::zeta * alloc.f(i) * e_i;
+    const Eigen::Vector3d moment_i = r_i.cross(force_i) - spin * params::zeta * alloc.f(i) * e_i;
 
     result.force_actual += force_i;
     result.moment_actual += moment_i;
