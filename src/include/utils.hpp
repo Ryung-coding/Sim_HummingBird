@@ -622,19 +622,25 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
 
   const double front_x = params::Lx - params::d * std::cos(phi14) * std::sin(theta_front);
   const double front_y = params::d * std::sin(phi14);
+  const double front_z = -params::d * std::cos(phi14) * std::cos(theta_front);
 
   const double back_x = -params::Lx - params::d * std::cos(phi23) * std::sin(theta_back);
   const double back_y = params::d * std::sin(phi23);
+  const double back_z = -params::d * std::cos(phi23) * std::cos(theta_back);
 
   Matrix68d A;
   A.setZero();
 
+  A(0, 1) = -front_z;
   A(0, 2) = front_y;
+  A(0, 4) = -back_z;
   A(0, 5) = back_y;
   A(0, 6) = params::Ly * front_ez - params::zeta * front_ex;
   A(0, 7) = params::Ly * back_ez + params::zeta * back_ex;
 
+  A(1, 0) = front_z;
   A(1, 2) = -front_x;
+  A(1, 3) = back_z;
   A(1, 5) = -back_x;
   A(1, 6) = -params::zeta * front_ey;
   A(1, 7) = params::zeta * back_ey;
@@ -706,7 +712,6 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
   out.phi(2) = phi23_cmd;
   out.phi(3) = phi14_cmd;
 
-
   return out;
 }
 
@@ -728,7 +733,7 @@ inline AllocationOutput allocation_P4T4(const Eigen::Vector3d& moment_cmd, const
     const double phi = phi_measured(i);
 
     Eigen::Vector3d r;
-    r << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), 0.0;
+    r << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), -params::d * std::cos(phi) * std::cos(theta);
 
     Eigen::Matrix3d B;
     B << 0.0, -r(2), r(1),
@@ -831,19 +836,25 @@ inline AllocationOutput allocation_P2T2_ADA(const Eigen::Vector3d& moment_cmd, c
   // A(q) is frozen at current q_meas.
   const double x_f = params::Lx - params::d * std::cos(phi_f) * std::sin(theta_f);
   const double y_f = params::d * std::sin(phi_f);
+  const double z_f = -params::d * std::cos(phi_f) * std::cos(theta_f);
   const double x_b = -params::Lx - params::d * std::cos(phi_b) * std::sin(theta_b);
   const double y_b = params::d * std::sin(phi_b);
+  const double z_b = -params::d * std::cos(phi_b) * std::cos(theta_b);
 
   // w=A(q)u, w=[Mx My Mz Fx Fy Fz]^T, u=[Ffx Ffy Ffz Fbx Fby Fbz df14 df23]^T
   Matrix68d A;
   A.setZero();
 
+  A(0, 1) = -z_f;
   A(0, 2) = y_f;
+  A(0, 4) = -z_b;
   A(0, 5) = y_b;
   A(0, 6) = params::Ly * efz - params::zeta * efx;
   A(0, 7) = params::Ly * ebz + params::zeta * ebx;
 
+  A(1, 0) = z_f;
   A(1, 2) = -x_f;
+  A(1, 3) = z_b;
   A(1, 5) = -x_b;
   A(1, 6) = -params::zeta * efy;
   A(1, 7) = params::zeta * eby;
@@ -1019,7 +1030,7 @@ inline AllocationCheck checkAllocation(const AllocationOutput& alloc, const Eige
     e_i << -std::sin(theta) * std::cos(phi), std::sin(phi), -std::cos(theta) * std::cos(phi);
 
     Eigen::Vector3d r_i;
-    r_i << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), 0.0;
+    r_i << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), -params::d * std::cos(phi) * std::cos(theta);
 
     const Eigen::Vector3d force_i = alloc.f(i) * e_i;
     const Eigen::Vector3d moment_i = r_i.cross(force_i) - spin * params::zeta * alloc.f(i) * e_i;
