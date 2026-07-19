@@ -21,7 +21,7 @@ from multirotor_interfaces.msg import Input, MultirotorState
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
 
-USE_NOISE = False
+USE_NOISE = True
 
 SIG_POS = 0.005
 SIG_VEL = 0.03
