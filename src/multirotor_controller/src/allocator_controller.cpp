@@ -57,7 +57,7 @@ private:
     const Eigen::Vector4d phi_used = use_previous_theta_phi_ ? phi_prev_ : phi_measured_;
 
     // const auto alloc = utils::allocation_P2T2(moment_cmd, force_cmd, theta_used, phi_used);
-    const auto alloc = utils::allocation_P2T2_renewal(moment_cmd, force_cmd, theta_used, phi_used);
+    const auto alloc = utils::allocation_P2T2_renewal(moment_cmd, force_cmd);
     // const auto alloc = utils::allocation_P4T4(moment_cmd, force_cmd, theta_used, phi_used);
     // const auto alloc = utils::allocation_P2T2_ADA(moment_cmd, force_cmd, att_cmd_, theta_used, phi_used);
     // const auto alloc = utils::allocation_P2T2_ADA_renewal(moment_cmd, force_cmd, att_cmd_, theta_used, phi_used);
@@ -65,14 +65,14 @@ private:
 
     if (check.problem) RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 500, "%s", check.message.c_str());
 
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-      "\n[ALLOCATION]"
-      "\n  f     = %.4f %.4f %.4f %.4f"
-      "\n  theta = %.4f %.4f %.4f %.4f"
-      "\n  phi   = %.4f %.4f %.4f %.4f",
-      alloc.f(0), alloc.f(1), alloc.f(2), alloc.f(3),
-      alloc.theta(0), alloc.theta(1), alloc.theta(2), alloc.theta(3),
-      alloc.phi(0), alloc.phi(1), alloc.phi(2), alloc.phi(3));
+    // RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+    //   "\n[ALLOCATION]"
+    //   "\n  f     = %.4f %.4f %.4f %.4f"
+    //   "\n  theta = %.4f %.4f %.4f %.4f"
+    //   "\n  phi   = %.4f %.4f %.4f %.4f",
+    //   alloc.f(0), alloc.f(1), alloc.f(2), alloc.f(3),
+    //   alloc.theta(0), alloc.theta(1), alloc.theta(2), alloc.theta(3),
+    //   alloc.phi(0), alloc.phi(1), alloc.phi(2), alloc.phi(3));
 
     multirotor_interfaces::msg::Input out;
 
@@ -91,8 +91,8 @@ private:
     out.phi[2] = alloc.phi(2);
     out.phi[3] = alloc.phi(3);
 
-    theta_prev_ = alloc.theta;
-    phi_prev_ = alloc.phi;
+    theta_prev_ = 0.1*alloc.theta + 0.9*theta_prev_;
+    phi_prev_ = 0.1*alloc.phi + 0.9*phi_prev_;
 
     input_publisher_->publish(out);
   }

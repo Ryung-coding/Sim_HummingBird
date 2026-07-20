@@ -332,17 +332,41 @@ class Win(QtWidgets.QMainWindow):
             self._cv[f"f_all{i}"] = p_f_all.plot(pen=_pen(cl), name=f"f{i+1}")
         self._plots_act.append(p_f_all)
 
-        p_phi_all = _mkplot(self.act_glw, 3, 1, "φ1-φ4 / φ_cmd", "φ [deg]")
-        for i, cl in enumerate(C4):
-            self._cv[f"phi_all{i}"] = p_phi_all.plot(pen=_pen(cl), name=f"φ{i+1}")
-            self._cv[f"phic_all{i}"] = _bring_front(p_phi_all.plot(pen=_cmd_pen(), name=f"φ{i+1}_cmd"))
-        self._plots_act.append(p_phi_all)
+        # P2T2 pair force:
+        #   f14 = average force of rotors 1 and 4
+        #   f23 = average force of rotors 2 and 3
+        p_f_pair = _mkplot(self.act_glw, 3, 1, "f14 / f23", "pair force [N]")
+        self._cv["f_pair14"] = p_f_pair.plot(pen=_pen(C_R), name="f14 = (f1+f4)/2")
+        self._cv["f_pair23"] = p_f_pair.plot(pen=_pen(C_B), name="f23 = (f2+f3)/2")
+        self._plots_act.append(p_f_pair)
 
-        p_theta_all = _mkplot(self.act_glw, 3, 2, "θ1-θ4 / θ_cmd", "θ [deg]")
-        for i, cl in enumerate(C4):
-            self._cv[f"tht_all{i}"] = p_theta_all.plot(pen=_pen(cl), name=f"θ{i+1}")
-            self._cv[f"thtc_all{i}"] = _bring_front(p_theta_all.plot(pen=_cmd_pen(), name=f"θ{i+1}_cmd"))
-        self._plots_act.append(p_theta_all)
+        # P2T2 pair theta average, including measured and commanded angles.
+        p_theta_pair = _mkplot(
+            self.act_glw,
+            3,
+            2,
+            "θ14_avg / θ23_avg / cmd",
+            "pair θ avg [deg]"
+        )
+        self._cv["theta_pair14"] = p_theta_pair.plot(
+            pen=_pen(C_R), name="θ14_avg = (θ1+θ4)/2"
+        )
+        self._cv["theta_pair23"] = p_theta_pair.plot(
+            pen=_pen(C_B), name="θ23_avg = (θ2+θ3)/2"
+        )
+        self._cv["theta_pair14_cmd"] = _bring_front(
+            p_theta_pair.plot(
+                pen=pg.mkPen(color=C_R, width=2, style=QtCore.Qt.DashLine),
+                name="θ14_avg_cmd"
+            )
+        )
+        self._cv["theta_pair23_cmd"] = _bring_front(
+            p_theta_pair.plot(
+                pen=pg.mkPen(color=C_B, width=2, style=QtCore.Qt.DashLine),
+                name="θ23_avg_cmd"
+            )
+        )
+        self._plots_act.append(p_theta_pair)
 
         self.max_label = pg.LabelItem(justify="left")
         self.max_label.setText(
@@ -470,25 +494,36 @@ class Win(QtWidgets.QMainWindow):
                 cv[f"f_single{i}"].setData(df[:, 0], df[:, 1 + i])
                 cv[f"f_all{i}"].setData(df[:, 0], df[:, 1 + i])
 
+            f14 = 0.5 * (df[:, 1] + df[:, 4])
+            f23 = 0.5 * (df[:, 2] + df[:, 3])
+            cv["f_pair14"].setData(df[:, 0], f14)
+            cv["f_pair23"].setData(df[:, 0], f23)
+
         if dph.shape[0]:
             for i in range(4):
                 cv[f"phi_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
-                cv[f"phi_all{i}"].setData(dph[:, 0], dph[:, 1 + i])
 
         if dphc.shape[0]:
             for i in range(4):
                 cv[f"phic_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
-                cv[f"phic_all{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
 
         if dth.shape[0]:
             for i in range(4):
                 cv[f"tht_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
-                cv[f"tht_all{i}"].setData(dth[:, 0], dth[:, 1 + i])
+
+            theta14_avg = 0.5 * (dth[:, 1] + dth[:, 4])
+            theta23_avg = 0.5 * (dth[:, 2] + dth[:, 3])
+            cv["theta_pair14"].setData(dth[:, 0], theta14_avg)
+            cv["theta_pair23"].setData(dth[:, 0], theta23_avg)
 
         if dthc.shape[0]:
             for i in range(4):
                 cv[f"thtc_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
-                cv[f"thtc_all{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
+
+            theta14_avg_cmd = 0.5 * (dthc[:, 1] + dthc[:, 4])
+            theta23_avg_cmd = 0.5 * (dthc[:, 2] + dthc[:, 3])
+            cv["theta_pair14_cmd"].setData(dthc[:, 0], theta14_avg_cmd)
+            cv["theta_pair23_cmd"].setData(dthc[:, 0], theta23_avg_cmd)
 
         self._update_max_label()
 

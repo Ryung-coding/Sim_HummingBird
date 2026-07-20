@@ -649,7 +649,7 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
   A(2, 1) = front_x;
   A(2, 3) = -back_y;
   A(2, 4) = back_x;
-  A(2, 6) = -params::Ly * front_ex - params::zeta * front_ez;
+  A(2, 6) = -params::Ly * front_ex + params::zeta * front_ez; //바뀜
   A(2, 7) = -params::Ly * back_ex + params::zeta * back_ez;
 
   A(3, 0) = 1.0;
@@ -715,74 +715,56 @@ inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-
-inline AllocationOutput allocation_P2T2_renewal(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& theta_measured, const Eigen::Vector4d& phi_measured)
+inline AllocationOutput allocation_P2T2_renewal(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
 {
-  (void)theta_measured;
-  (void)phi_measured;
+  const double force_norm = std::max(force_cmd.norm(), params::f_min);
 
-  const double force_cmd_norm = force_cmd.norm();
-  const double force_norm = std::max(force_cmd_norm, params::f_min);
+  Eigen::Vector3d force_dir;
+  if (force_norm > params::f_min) force_dir = force_cmd / force_norm;
+  else force_dir << 0.0, 0.0, -1.0;
 
-  Eigen::Vector3d common_dir;
-  if (force_cmd_norm > params::f_min) {
-    common_dir = force_cmd / force_cmd_norm;
-  }
-  else {
-    common_dir << 0.0, 0.0, -1.0;
-  }
+  double theta_des = std::atan2(-force_dir(0), -force_dir(2));
+  double phi_des = std::asin(std::clamp(force_dir(1), -1.0, 1.0));
 
-  double theta_common = std::atan2(-common_dir(0), -common_dir(2));
-  double phi_common = std::asin(std::clamp(common_dir(1), -1.0, 1.0));
-
-  theta_common = std::clamp(theta_common, -params::theta_limit_rad, params::theta_limit_rad);
-  phi_common = std::clamp(phi_common, -params::phi_limit_rad, params::phi_limit_rad);
+  theta_des = std::clamp(theta_des, -params::theta_limit_rad, params::theta_limit_rad);
+  phi_des = std::clamp(phi_des, -params::phi_limit_rad, params::phi_limit_rad);
 
   Eigen::Vector3d e_cmd;
-  e_cmd << -std::sin(theta_common) * std::cos(phi_common),
-            std::sin(phi_common),
-           -std::cos(theta_common) * std::cos(phi_common);
+  e_cmd << -std::sin(theta_des) * std::cos(phi_des),
+            std::sin(phi_des),
+           -std::cos(theta_des) * std::cos(phi_des);
 
-  constexpr std::array<double, 4> x_signs = {1.0, -1.0, -1.0, 1.0};
-  constexpr std::array<double, 4> y_signs = {1.0, 1.0, -1.0, -1.0};
-  constexpr std::array<double, 4> spins = {1.0, -1.0, 1.0, -1.0};
+  const double Lx    = params::Lx;
+  const double Ly    = params::Ly;
+  const double zeta  = params::zeta;
 
   Eigen::Matrix4d B;
-  B.setZero();
+  Eigen::Vector4d Wrench;
+  
+  Wrench << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_norm;
 
-  for (int i = 0; i < 4; ++i) {
-    Eigen::Vector3d r_i;
-    r_i << x_signs[i] * params::Lx, y_signs[i] * params::Ly, 0.0;
+  B <<
+                    Ly * e_cmd(2) - zeta * e_cmd(0),                     Ly * e_cmd(2) + zeta * e_cmd(0),                     -Ly * e_cmd(2) - zeta * e_cmd(0),                    -Ly * e_cmd(2) + zeta * e_cmd(0),
 
-    const Eigen::Vector3d moment_per_newton =
-      r_i.cross(e_cmd) - spins[i] * params::zeta * e_cmd;
+                   -Lx * e_cmd(2) - zeta * e_cmd(1),                     Lx * e_cmd(2) + zeta * e_cmd(1),                      Lx * e_cmd(2) - zeta * e_cmd(1),                    -Lx * e_cmd(2) + zeta * e_cmd(1),
 
-    B(0, i) = moment_per_newton(0);
-    B(1, i) = moment_per_newton(1);
-    B(2, i) = moment_per_newton(2);
-    B(3, i) = 1.0;
-  }
+    Lx * e_cmd(1) - Ly * e_cmd(0) - zeta * e_cmd(2),    -Lx * e_cmd(1) - Ly * e_cmd(0) + zeta * e_cmd(2),     -Lx * e_cmd(1) + Ly * e_cmd(0) - zeta * e_cmd(2),     Lx * e_cmd(1) + Ly * e_cmd(0) + zeta * e_cmd(2),
 
-  Eigen::Vector4d target;
-  target << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_norm;
+                                                1.0,                                                 1.0,                                                   1.0,                                                1.0;
 
-  const Eigen::Matrix4d H =
-    B * B.transpose() +
-    params::virtual_lambda * params::virtual_lambda * Eigen::Matrix4d::Identity();
-
-  const Eigen::Vector4d thrust_raw = B.transpose() * H.ldlt().solve(target);
+  
+  const Eigen::Matrix4d H = B * B.transpose() + params::virtual_lambda * params::virtual_lambda * Eigen::Matrix4d::Identity();
+  const Eigen::Vector4d thrust_raw = B.transpose() * H.ldlt().solve(Wrench);
 
   AllocationOutput out;
-  for (int i = 0; i < 4; ++i) {
-    out.f(i) = std::clamp(thrust_raw(i), params::f_cmd_min, params::f_cmd_max);
-  }
 
-  out.theta.setConstant(theta_common);
-  out.phi.setConstant(phi_common);
+  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(thrust_raw(i), params::f_cmd_min, params::f_cmd_max);
+
+  out.theta.setConstant(theta_des);
+  out.phi.setConstant(phi_des);
 
   return out;
 }
-
 inline AllocationOutput allocation_P4T4(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& theta_measured, const Eigen::Vector4d& phi_measured)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
