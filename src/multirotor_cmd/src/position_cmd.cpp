@@ -30,8 +30,9 @@ private:
     // const auto cmd = utils::takeApple(t);
     // const auto cmd = utils::positionTuningPath(t);
     // const auto cmd = utils::attitudeTuningPath(t);
+    const auto cmd = utils::steppedAttitudePath(t);
     // const auto cmd = utils::agilePath(t);
-    const auto cmd = utils::positionTrack(t);
+    // const auto cmd = utils::positionTrack(t);
 
     msg.pos_cmd[0] = cmd.x;
     msg.pos_cmd[1] = cmd.y;

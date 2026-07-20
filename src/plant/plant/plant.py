@@ -37,6 +37,13 @@ N_CTRL = N_THRUST + N_THETA + N_PHI
 USE_FIXED_CAMERA = False
 VIEW_CAMERA_NAME = "front_camera"
 
+SHOW_THRUST_ARROWS = True
+THRUST_ARROW_SCALE = 0.025
+THRUST_ARROW_MIN_LEN = 0.15
+THRUST_ARROW_MAX_LEN = 1.20
+THRUST_ARROW_WIDTH = 0.008
+THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
+
 
 def to_zdown(v):
     return np.array([v[0], -v[1], -v[2]], dtype=float)
@@ -60,12 +67,48 @@ def rotmat_to_rpy(R):
     return np.array([roll, pitch, yaw], dtype=float)
 
 
-def imu_quat_to_zdown_rpy(q_imu):
+def rotmat_to_quat(R):
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+
+    if tr > 0.0:
+        s = math.sqrt(tr + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (R[2, 1] - R[1, 2]) / s
+        qy = (R[0, 2] - R[2, 0]) / s
+        qz = (R[1, 0] - R[0, 1]) / s
+    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
+        s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+        qw = (R[2, 1] - R[1, 2]) / s
+        qx = 0.25 * s
+        qy = (R[0, 1] + R[1, 0]) / s
+        qz = (R[0, 2] + R[2, 0]) / s
+    elif R[1, 1] > R[2, 2]:
+        s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+        qw = (R[0, 2] - R[2, 0]) / s
+        qx = (R[0, 1] + R[1, 0]) / s
+        qy = 0.25 * s
+        qz = (R[1, 2] + R[2, 1]) / s
+    else:
+        s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+        qw = (R[1, 0] - R[0, 1]) / s
+        qx = (R[0, 2] + R[2, 0]) / s
+        qy = (R[1, 2] + R[2, 1]) / s
+        qz = 0.25 * s
+
+    q = np.array([qw, qx, qy, qz], dtype=float)
+    n = np.linalg.norm(q)
+
+    if n < 1.0e-9:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+
+    return q / n
+
+
+def imu_quat_to_zdown_rot(q_imu):
     S = np.diag([1.0, -1.0, -1.0])
     R_imu_mj = quat_to_rotmat(q_imu)
-    R_zdown = S @ R_imu_mj
 
-    return rotmat_to_rpy(R_zdown)
+    return S @ R_imu_mj
 
 
 def add_noise(x, sigma):
@@ -104,6 +147,12 @@ class PlantRosNode(Node):
         self.sid_encoder_phi2 = self.sensor_id("encoder_phi2")
         self.sid_encoder_phi3 = self.sensor_id("encoder_phi3")
         self.sid_encoder_phi4 = self.sensor_id("encoder_phi4")
+        self.prop_site_ids = [
+            self.site_id("prop1_site"),
+            self.site_id("prop2_site"),
+            self.site_id("prop3_site"),
+            self.site_id("prop4_site"),
+        ]
 
         self.s_adr = self.model.sensor_adr
         self.s_dim = self.model.sensor_dim
@@ -135,6 +184,14 @@ class PlantRosNode(Node):
 
         if sid < 0:
             raise RuntimeError(f"sensor not found: {name}")
+
+        return sid
+
+    def site_id(self, name):
+        sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, name)
+
+        if sid < 0:
+            raise RuntimeError(f"site not found: {name}")
 
         return sid
 
@@ -196,7 +253,9 @@ class PlantRosNode(Node):
         theta = add_noise(theta, SIG_ENCODER)
         phi = add_noise(phi, SIG_ENCODER)
 
-        rpy = imu_quat_to_zdown_rpy(imu_quat)
+        R_zdown = imu_quat_to_zdown_rot(imu_quat)
+        rpy = rotmat_to_rpy(R_zdown)
+        quat = rotmat_to_quat(R_zdown)
 
         if self.prev_pub_t is None:
             acc = np.zeros(3, dtype=float)
@@ -217,6 +276,7 @@ class PlantRosNode(Node):
         msg.acc = acc.tolist()
 
         msg.rpy = rpy.tolist()
+        msg.quat = quat.tolist()
         msg.w_rpy = imu_gyro.tolist()
         msg.a_rpy = a_rpy.tolist()
 
@@ -271,6 +331,51 @@ class PlantRosNode(Node):
 
         self.get_logger().info(f"viewer camera: {VIEW_CAMERA_NAME}")
 
+    def update_thrust_arrows(self, viewer):
+        if not SHOW_THRUST_ARROWS or not hasattr(viewer, "user_scn"):
+            return
+
+        scn = viewer.user_scn
+        scn.ngeom = 0
+
+        for i, site_id in enumerate(self.prop_site_ids):
+            if scn.ngeom >= len(scn.geoms):
+                return
+
+            thrust = max(0.0, float(self.ctrl[i]))
+
+            if thrust <= 1.0e-6:
+                continue
+
+            length = np.clip(
+                THRUST_ARROW_SCALE * thrust,
+                THRUST_ARROW_MIN_LEN,
+                THRUST_ARROW_MAX_LEN
+            )
+
+            pos = np.array(self.data.site_xpos[site_id], dtype=np.float64)
+            R = np.array(self.data.site_xmat[site_id], dtype=np.float64).reshape(3, 3)
+            thrust_dir = R @ np.array([0.0, 0.0, -1.0], dtype=np.float64)
+            tip = pos + length * thrust_dir
+
+            geom = scn.geoms[scn.ngeom]
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_ARROW,
+                np.zeros(3, dtype=np.float64),
+                np.zeros(3, dtype=np.float64),
+                np.eye(3, dtype=np.float64).reshape(9),
+                THRUST_ARROW_RGBA
+            )
+            mujoco.mjv_connector(
+                geom,
+                mujoco.mjtGeom.mjGEOM_ARROW,
+                THRUST_ARROW_WIDTH,
+                pos,
+                tip
+            )
+            scn.ngeom += 1
+
     def viewer_loop(self):
         try:
             with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
@@ -278,6 +383,7 @@ class PlantRosNode(Node):
 
                 while viewer.is_running() and rclpy.ok() and not self.stop_event.is_set():
                     with self.lock:
+                        self.update_thrust_arrows(viewer)
                         viewer.sync()
 
                     time.sleep(0.002)

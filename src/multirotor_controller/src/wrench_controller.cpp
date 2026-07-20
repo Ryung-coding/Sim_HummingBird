@@ -23,7 +23,7 @@ public:
     att_cmd_.setZero();
     pos_.setZero();
     vel_.setZero();
-    rpy_.setZero();
+    quat_ << 1.0, 0.0, 0.0, 0.0;
     W_.setZero();
     pos_i_.setZero();
     att_i_.setZero();
@@ -43,7 +43,7 @@ private:
   {
     pos_ << static_cast<double>(msg->pos[0]), static_cast<double>(msg->pos[1]), static_cast<double>(msg->pos[2]);
     vel_ << static_cast<double>(msg->vel[0]), static_cast<double>(msg->vel[1]), static_cast<double>(msg->vel[2]);
-    rpy_ << static_cast<double>(msg->rpy[0]), static_cast<double>(msg->rpy[1]), static_cast<double>(msg->rpy[2]);
+    quat_ << static_cast<double>(msg->quat[0]), static_cast<double>(msg->quat[1]), static_cast<double>(msg->quat[2]), static_cast<double>(msg->quat[3]);
     W_ << static_cast<double>(msg->w_rpy[0]), static_cast<double>(msg->w_rpy[1]), static_cast<double>(msg->w_rpy[2]);
 
     have_state_ = true;
@@ -106,7 +106,7 @@ private:
 
     if (!(dt > 0.0) || dt > 0.2) dt = 1.0 / static_cast<double>(params::RATE_HZ);
 
-    const Eigen::Matrix3d R = utils::rpyToRot(rpy_);
+    const Eigen::Matrix3d R = utils::quatToRot(quat_);
     const Eigen::Matrix3d Rd = params::USE_SO3_HEADING_CMD ? utils::headingToRot(att_cmd_) : utils::rpyToRot(att_cmd_);
 
     const Eigen::Vector3d F_world = positionController(dt);
@@ -138,7 +138,7 @@ private:
   Eigen::Vector3d att_cmd_;
   Eigen::Vector3d pos_;
   Eigen::Vector3d vel_;
-  Eigen::Vector3d rpy_;
+  Eigen::Vector4d quat_;
   Eigen::Vector3d W_;
 
   Eigen::Vector3d pos_i_;

@@ -1,4 +1,5 @@
 #include <rclcpp/rclcpp.hpp>
+#include <multirotor_interfaces/msg/cmd.hpp>
 #include <multirotor_interfaces/msg/wrench.hpp>
 #include <multirotor_interfaces/msg/input.hpp>
 #include <multirotor_interfaces/msg/multirotor_state.hpp>
@@ -13,15 +14,24 @@ class AllocatorController : public rclcpp::Node
 public:
   AllocatorController() : rclcpp::Node("allocator_controller")
   {
+    cmd_subscription_ = this->create_subscription<multirotor_interfaces::msg::Cmd>("/cmd", 10, std::bind(&AllocatorController::onCmd, this, std::placeholders::_1));
     wrench_subscription_ = this->create_subscription<multirotor_interfaces::msg::Wrench>("/wrench", 10, std::bind(&AllocatorController::onWrench, this, std::placeholders::_1));
     state_subscription_ = this->create_subscription<multirotor_interfaces::msg::MultirotorState>("/multirotor_state", 10, std::bind(&AllocatorController::onState, this, std::placeholders::_1));
     input_publisher_ = this->create_publisher<multirotor_interfaces::msg::Input>("/input", 10);
 
+    att_cmd_.setZero();
     theta_measured_.setZero();
     phi_measured_.setZero();
+    theta_prev_.setZero();
+    phi_prev_.setZero();
   }
 
 private:
+  void onCmd(const multirotor_interfaces::msg::Cmd::SharedPtr msg)
+  {
+    att_cmd_ << static_cast<double>(msg->att_cmd[0]), static_cast<double>(msg->att_cmd[1]), static_cast<double>(msg->att_cmd[2]);
+  }
+
   void onState(const multirotor_interfaces::msg::MultirotorState::SharedPtr msg)
   {
     theta_measured_(0) = static_cast<double>(msg->theta[0]);
@@ -43,20 +53,26 @@ private:
     moment_cmd << static_cast<double>(msg->moment[0]), static_cast<double>(msg->moment[1]), static_cast<double>(msg->moment[2]);
     force_cmd << static_cast<double>(msg->force[0]), static_cast<double>(msg->force[1]), static_cast<double>(msg->force[2]);
 
-    const auto alloc = utils::allocation_P2T2(moment_cmd, force_cmd, theta_measured_, phi_measured_);
-    // const auto alloc = utils::allocation_P4T4(moment_cmd, force_cmd, theta_measured_, phi_measured_);
+    const Eigen::Vector4d theta_used = use_previous_theta_phi_ ? theta_prev_ : theta_measured_;
+    const Eigen::Vector4d phi_used = use_previous_theta_phi_ ? phi_prev_ : phi_measured_;
+
+    // const auto alloc = utils::allocation_P2T2(moment_cmd, force_cmd, theta_used, phi_used);
+    const auto alloc = utils::allocation_P2T2_renewal(moment_cmd, force_cmd);
+    // const auto alloc = utils::allocation_P4T4(moment_cmd, force_cmd, theta_used, phi_used);
+    // const auto alloc = utils::allocation_P2T2_ADA(moment_cmd, force_cmd, att_cmd_, theta_used, phi_used);
+    // const auto alloc = utils::allocation_P2T2_ADA_renewal(moment_cmd, force_cmd, att_cmd_, theta_used, phi_used);
     const auto check = utils::checkAllocation(alloc, moment_cmd, force_cmd);
 
     if (check.problem) RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 500, "%s", check.message.c_str());
 
-    RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-      "\n[ALLOCATION]"
-      "\n  f     = %.4f %.4f %.4f %.4f"
-      "\n  theta = %.4f %.4f %.4f %.4f"
-      "\n  phi   = %.4f %.4f %.4f %.4f",
-      alloc.f(0), alloc.f(1), alloc.f(2), alloc.f(3),
-      alloc.theta(0), alloc.theta(1), alloc.theta(2), alloc.theta(3),
-      alloc.phi(0), alloc.phi(1), alloc.phi(2), alloc.phi(3));
+    // RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+    //   "\n[ALLOCATION]"
+    //   "\n  f     = %.4f %.4f %.4f %.4f"
+    //   "\n  theta = %.4f %.4f %.4f %.4f"
+    //   "\n  phi   = %.4f %.4f %.4f %.4f",
+    //   alloc.f(0), alloc.f(1), alloc.f(2), alloc.f(3),
+    //   alloc.theta(0), alloc.theta(1), alloc.theta(2), alloc.theta(3),
+    //   alloc.phi(0), alloc.phi(1), alloc.phi(2), alloc.phi(3));
 
     multirotor_interfaces::msg::Input out;
 
@@ -75,15 +91,23 @@ private:
     out.phi[2] = alloc.phi(2);
     out.phi[3] = alloc.phi(3);
 
+    theta_prev_ = 0.1*alloc.theta + 0.9*theta_prev_;
+    phi_prev_ = 0.1*alloc.phi + 0.9*phi_prev_;
+
     input_publisher_->publish(out);
   }
 
+  rclcpp::Subscription<multirotor_interfaces::msg::Cmd>::SharedPtr cmd_subscription_;
   rclcpp::Subscription<multirotor_interfaces::msg::Wrench>::SharedPtr wrench_subscription_;
   rclcpp::Subscription<multirotor_interfaces::msg::MultirotorState>::SharedPtr state_subscription_;
   rclcpp::Publisher<multirotor_interfaces::msg::Input>::SharedPtr input_publisher_;
 
+  Eigen::Vector3d att_cmd_;
   Eigen::Vector4d theta_measured_;
   Eigen::Vector4d phi_measured_;
+  Eigen::Vector4d theta_prev_;
+  Eigen::Vector4d phi_prev_;
+  bool use_previous_theta_phi_{false};
 };
 
 int main(int argc, char** argv)
