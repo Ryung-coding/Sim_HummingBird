@@ -1,6 +1,7 @@
 build/
 install/
 log/
+data_logs/
 
 MUJOCO_LOG.TXT/
 MUJOCO_LOG.TXT

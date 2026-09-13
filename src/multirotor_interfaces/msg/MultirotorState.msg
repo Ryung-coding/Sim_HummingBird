@@ -12,5 +12,5 @@ float64[3] a_rpy     # [a_roll, a_pitch, a_yaw] [rad/s^2]
 
 float64[3] imu_acc   # z-down IMU acceleration [m/s^2]
 
-float64[4] theta     # [theta1, theta2, theta3, theta4] [rad]
-float64[4] phi       # [phi1, phi2, phi3, phi4] [rad]
+float64[2] beta     # beta_1, beta_2 [rad]
+float64[4] alpha   # alpha_1 ... alpha_4 [rad]

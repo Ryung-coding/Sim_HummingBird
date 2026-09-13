@@ -21,7 +21,7 @@ from multirotor_interfaces.msg import Input, MultirotorState
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
 
-USE_NOISE = True
+USE_NOISE = False
 
 SIG_POS = 0.005
 SIG_VEL = 0.03
@@ -30,9 +30,9 @@ SIG_ACC = 0.10
 SIG_ENCODER = 0.002
 
 N_THRUST = 4
-N_THETA = 4
-N_PHI = 4
-N_CTRL = N_THRUST + N_THETA + N_PHI
+N_BETA = 2
+N_ALPHA = 4
+N_CTRL = N_THRUST + 4 + N_ALPHA
 
 USE_FIXED_CAMERA = False
 VIEW_CAMERA_NAME = "front_camera"
@@ -138,15 +138,15 @@ class PlantRosNode(Node):
         self.sid_body_pos = self.sensor_id("body_pos")
         self.sid_body_linvel = self.sensor_id("body_linvel")
 
-        self.sid_encoder_theta1 = self.sensor_id("encoder_theta1")
-        self.sid_encoder_theta2 = self.sensor_id("encoder_theta2")
-        self.sid_encoder_theta3 = self.sensor_id("encoder_theta3")
-        self.sid_encoder_theta4 = self.sensor_id("encoder_theta4")
+        self.sid_encoder_beta1 = self.sensor_id("encoder_beta1")
+        self.sid_encoder_beta2 = self.sensor_id("encoder_beta2")
+        self.sid_encoder_beta3 = self.sensor_id("encoder_beta3")
+        self.sid_encoder_beta4 = self.sensor_id("encoder_beta4")
 
-        self.sid_encoder_phi1 = self.sensor_id("encoder_phi1")
-        self.sid_encoder_phi2 = self.sensor_id("encoder_phi2")
-        self.sid_encoder_phi3 = self.sensor_id("encoder_phi3")
-        self.sid_encoder_phi4 = self.sensor_id("encoder_phi4")
+        self.sid_encoder_alpha1 = self.sensor_id("encoder_alpha1")
+        self.sid_encoder_alpha2 = self.sensor_id("encoder_alpha2")
+        self.sid_encoder_alpha3 = self.sensor_id("encoder_alpha3")
+        self.sid_encoder_alpha4 = self.sensor_id("encoder_alpha4")
         self.prop_site_ids = [
             self.site_id("prop1_site"),
             self.site_id("prop2_site"),
@@ -177,7 +177,7 @@ class PlantRosNode(Node):
         self.sim_thread.start()
 
         self.get_logger().info("state convention: z-down, [x, y, z] = [x_mj, -y_mj, -z_mj]")
-        self.get_logger().info("input order: f[4], theta[4], phi[4] -> ctrl[0:4], ctrl[4:8], ctrl[8:12]")
+        self.get_logger().info("input order: f[4], beta[2] expanded to ctrl[4:8], alpha[4] -> ctrl[0:4], ctrl[4:8], ctrl[8:12]")
 
     def sensor_id(self, name):
         sid = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, name)
@@ -203,25 +203,25 @@ class PlantRosNode(Node):
 
     def input_callback(self, msg):
         f = np.asarray(msg.f, dtype=float)
-        theta = np.asarray(msg.theta, dtype=float)
-        phi = np.asarray(msg.phi, dtype=float)
+        beta = np.asarray(msg.beta, dtype=float)
+        alpha = np.asarray(msg.alpha, dtype=float)
 
         if f.shape[0] != N_THRUST:
             self.get_logger().warn(f"f size must be {N_THRUST}, but got {f.shape[0]}")
             return
 
-        if theta.shape[0] != N_THETA:
-            self.get_logger().warn(f"theta size must be {N_THETA}, but got {theta.shape[0]}")
+        if beta.shape[0] != N_BETA:
+            self.get_logger().warn(f"beta size must be {N_BETA}, but got {beta.shape[0]}")
             return
 
-        if phi.shape[0] != N_PHI:
-            self.get_logger().warn(f"phi size must be {N_PHI}, but got {phi.shape[0]}")
+        if alpha.shape[0] != N_ALPHA:
+            self.get_logger().warn(f"alpha size must be {N_ALPHA}, but got {alpha.shape[0]}")
             return
 
         with self.lock:
             self.ctrl_recv[0:4] = f
-            self.ctrl_recv[4:8] = theta
-            self.ctrl_recv[8:12] = phi
+            self.ctrl_recv[4:8] = [beta[0], beta[1], beta[1], beta[0]]
+            self.ctrl_recv[8:12] = alpha
 
     def apply_control(self):
         self.data.ctrl[:N_CTRL] = self.ctrl[:N_CTRL]
@@ -236,22 +236,20 @@ class PlantRosNode(Node):
         pos = to_zdown(pos_mj)
         vel = to_zdown(vel_mj)
 
-        theta = np.array([
-            self.sensing_state(self.sid_encoder_theta1)[0],
-            self.sensing_state(self.sid_encoder_theta2)[0],
-            self.sensing_state(self.sid_encoder_theta3)[0],
-            self.sensing_state(self.sid_encoder_theta4)[0],
+        beta = np.array([
+            self.sensing_state(self.sid_encoder_beta1)[0],
+            self.sensing_state(self.sid_encoder_beta2)[0],
         ], dtype=float)
 
-        phi = np.array([
-            self.sensing_state(self.sid_encoder_phi1)[0],
-            self.sensing_state(self.sid_encoder_phi2)[0],
-            self.sensing_state(self.sid_encoder_phi3)[0],
-            self.sensing_state(self.sid_encoder_phi4)[0],
+        alpha = np.array([
+            self.sensing_state(self.sid_encoder_alpha1)[0],
+            self.sensing_state(self.sid_encoder_alpha2)[0],
+            self.sensing_state(self.sid_encoder_alpha3)[0],
+            self.sensing_state(self.sid_encoder_alpha4)[0],
         ], dtype=float)
 
-        theta = add_noise(theta, SIG_ENCODER)
-        phi = add_noise(phi, SIG_ENCODER)
+        beta = add_noise(beta, SIG_ENCODER)
+        alpha = add_noise(alpha, SIG_ENCODER)
 
         R_zdown = imu_quat_to_zdown_rot(imu_quat)
         rpy = rotmat_to_rpy(R_zdown)
@@ -282,8 +280,8 @@ class PlantRosNode(Node):
 
         msg.imu_acc = imu_acc.tolist()
 
-        msg.theta = theta.tolist()
-        msg.phi = phi.tolist()
+        msg.beta = beta.tolist()
+        msg.alpha = alpha.tolist()
 
         return msg
 

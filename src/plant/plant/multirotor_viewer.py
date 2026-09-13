@@ -5,6 +5,7 @@ import threading
 import numpy as np
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from multirotor_interfaces.msg import MultirotorState, Cmd, Wrench, Input
 
@@ -100,10 +101,10 @@ class VNode(Node):
 
         self.buf_wr = Ring(MAX_SAMPLES, 7)
 
-        self.buf_theta = Ring(MAX_SAMPLES, 5)
-        self.buf_phi = Ring(MAX_SAMPLES, 5)
-        self.buf_theta_cmd = Ring(MAX_SAMPLES, 5)
-        self.buf_phi_cmd = Ring(MAX_SAMPLES, 5)
+        self.buf_beta = Ring(MAX_SAMPLES, 3)
+        self.buf_alpha = Ring(MAX_SAMPLES, 5)
+        self.buf_beta_cmd = Ring(MAX_SAMPLES, 3)
+        self.buf_alpha_cmd = Ring(MAX_SAMPLES, 5)
         self.buf_thr = Ring(MAX_SAMPLES, 5)
 
         self.buf_pair_actual = Ring(MAX_SAMPLES, 5)
@@ -122,8 +123,8 @@ class VNode(Node):
 
         pos = np.array([m.pos[0], m.pos[1], m.pos[2]], dtype=float)
         rpy_deg = np.array([m.rpy[0], m.rpy[1], m.rpy[2]], dtype=float) * RAD2DEG
-        theta_deg = np.array([m.theta[0], m.theta[1], m.theta[2], m.theta[3]], dtype=float) * RAD2DEG
-        phi_deg = np.array([m.phi[0], m.phi[1], m.phi[2], m.phi[3]], dtype=float) * RAD2DEG
+        beta_deg = np.array([m.beta[0], m.beta[1]], dtype=float) * RAD2DEG
+        alpha_deg = np.array([m.alpha[0], m.alpha[1], m.alpha[2], m.alpha[3]], dtype=float) * RAD2DEG
 
         pos_err = self.last_pos_cmd - pos
 
@@ -131,13 +132,6 @@ class VNode(Node):
             wrap_deg(self.last_att_cmd_deg[0] - rpy_deg[0]),
             wrap_deg(self.last_att_cmd_deg[1] - rpy_deg[1]),
             wrap_deg(self.last_att_cmd_deg[2] - rpy_deg[2])
-        ], dtype=float)
-
-        pair_actual = np.array([
-            theta_deg[0] - theta_deg[3],
-            theta_deg[1] - theta_deg[2],
-            phi_deg[0] - phi_deg[3],
-            phi_deg[1] - phi_deg[2]
         ], dtype=float)
 
         pos_err_abs = np.abs(pos_err)
@@ -159,11 +153,10 @@ class VNode(Node):
 
             self.buf_pos.push([t, pos[0], pos[1], pos[2]])
             self.buf_rpy.push([t, rpy_deg[0], rpy_deg[1], rpy_deg[2]])
-            self.buf_theta.push([t, theta_deg[0], theta_deg[1], theta_deg[2], theta_deg[3]])
-            self.buf_phi.push([t, phi_deg[0], phi_deg[1], phi_deg[2], phi_deg[3]])
+            self.buf_beta.push([t, beta_deg[0], beta_deg[1]])
+            self.buf_alpha.push([t, alpha_deg[0], alpha_deg[1], alpha_deg[2], alpha_deg[3]])
             self.buf_pos_err.push([t, pos_err[0], pos_err[1], pos_err[2]])
             self.buf_att_err.push([t, att_err[0], att_err[1], att_err[2]])
-            self.buf_pair_actual.push([t, pair_actual[0], pair_actual[1], pair_actual[2], pair_actual[3]])
 
     def _cb_cmd(self, m):
         t = self._t()
@@ -188,21 +181,13 @@ class VNode(Node):
         t = self._t()
 
         f = np.array([m.f[0], m.f[1], m.f[2], m.f[3]], dtype=float)
-        theta_cmd_deg = np.array([m.theta[0], m.theta[1], m.theta[2], m.theta[3]], dtype=float) * RAD2DEG
-        phi_cmd_deg = np.array([m.phi[0], m.phi[1], m.phi[2], m.phi[3]], dtype=float) * RAD2DEG
-
-        pair_cmd = np.array([
-            theta_cmd_deg[0] - theta_cmd_deg[3],
-            theta_cmd_deg[1] - theta_cmd_deg[2],
-            phi_cmd_deg[0] - phi_cmd_deg[3],
-            phi_cmd_deg[1] - phi_cmd_deg[2]
-        ], dtype=float)
+        beta_cmd_deg = np.array([m.beta[0], m.beta[1]], dtype=float) * RAD2DEG
+        alpha_cmd_deg = np.array([m.alpha[0], m.alpha[1], m.alpha[2], m.alpha[3]], dtype=float) * RAD2DEG
 
         with self.lock:
             self.buf_thr.push([t, f[0], f[1], f[2], f[3]])
-            self.buf_theta_cmd.push([t, theta_cmd_deg[0], theta_cmd_deg[1], theta_cmd_deg[2], theta_cmd_deg[3]])
-            self.buf_phi_cmd.push([t, phi_cmd_deg[0], phi_cmd_deg[1], phi_cmd_deg[2], phi_cmd_deg[3]])
-            self.buf_pair_cmd.push([t, pair_cmd[0], pair_cmd[1], pair_cmd[2], pair_cmd[3]])
+            self.buf_beta_cmd.push([t, beta_cmd_deg[0], beta_cmd_deg[1]])
+            self.buf_alpha_cmd.push([t, alpha_cmd_deg[0], alpha_cmd_deg[1], alpha_cmd_deg[2], alpha_cmd_deg[3]])
 
 
 def _pen(color, w=2):
@@ -316,15 +301,15 @@ class Win(QtWidgets.QMainWindow):
             self._plots_act.append(p)
 
         for i, cl in enumerate(C4):
-            p = _mkplot(self.act_glw, 1, i, f"φ{i+1} / φ{i+1}_cmd", f"φ{i+1} [deg]")
-            self._cv[f"phi_single{i}"] = p.plot(pen=_pen(cl), name=f"φ{i+1}")
-            self._cv[f"phic_single{i}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"φ{i+1}_cmd"))
+            p = _mkplot(self.act_glw, 1, i, f"α{i+1} / α{i+1}_cmd", f"α{i+1} [deg]")
+            self._cv[f"alpha_single{i}"] = p.plot(pen=_pen(cl), name=f"α{i+1}")
+            self._cv[f"alphac_single{i}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"α{i+1}_cmd"))
             self._plots_act.append(p)
 
         for i, cl in enumerate(C4):
-            p = _mkplot(self.act_glw, 2, i, f"θ{i+1} / θ{i+1}_cmd", f"θ{i+1} [deg]")
-            self._cv[f"tht_single{i}"] = p.plot(pen=_pen(cl), name=f"θ{i+1}")
-            self._cv[f"thtc_single{i}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"θ{i+1}_cmd"))
+            p = _mkplot(self.act_glw, 2, i, f"β{i+1} / β{i+1}_cmd", f"β{i+1} [deg]")
+            self._cv[f"beta_single{i}"] = p.plot(pen=_pen(cl), name=f"β{i+1}")
+            self._cv[f"betac_single{i}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"β{i+1}_cmd"))
             self._plots_act.append(p)
 
         p_f_all = _mkplot(self.act_glw, 3, 0, "f1-f4", "force [N]")
@@ -341,32 +326,32 @@ class Win(QtWidgets.QMainWindow):
         self._plots_act.append(p_f_pair)
 
         # P2T2 pair theta average, including measured and commanded angles.
-        p_theta_pair = _mkplot(
+        p_beta_pair = _mkplot(
             self.act_glw,
             3,
             2,
-            "θ14_avg / θ23_avg / cmd",
-            "pair θ avg [deg]"
+            "β14_avg / β23_avg / cmd",
+            "pair β avg [deg]"
         )
-        self._cv["theta_pair14"] = p_theta_pair.plot(
-            pen=_pen(C_R), name="θ14_avg = (θ1+θ4)/2"
+        self._cv["beta_pair14"] = p_beta_pair.plot(
+            pen=_pen(C_R), name="β14_avg = (β1+β4)/2"
         )
-        self._cv["theta_pair23"] = p_theta_pair.plot(
-            pen=_pen(C_B), name="θ23_avg = (θ2+θ3)/2"
+        self._cv["beta_pair23"] = p_beta_pair.plot(
+            pen=_pen(C_B), name="β23_avg = (β2+β3)/2"
         )
-        self._cv["theta_pair14_cmd"] = _bring_front(
-            p_theta_pair.plot(
+        self._cv["beta_pair14_cmd"] = _bring_front(
+            p_beta_pair.plot(
                 pen=pg.mkPen(color=C_R, width=2, style=QtCore.Qt.DashLine),
-                name="θ14_avg_cmd"
+                name="β14_avg_cmd"
             )
         )
-        self._cv["theta_pair23_cmd"] = _bring_front(
-            p_theta_pair.plot(
+        self._cv["beta_pair23_cmd"] = _bring_front(
+            p_beta_pair.plot(
                 pen=pg.mkPen(color=C_B, width=2, style=QtCore.Qt.DashLine),
-                name="θ23_avg_cmd"
+                name="β23_avg_cmd"
             )
         )
-        self._plots_act.append(p_theta_pair)
+        self._plots_act.append(p_beta_pair)
 
         self.max_label = pg.LabelItem(justify="left")
         self.max_label.setText(
@@ -430,10 +415,10 @@ class Win(QtWidgets.QMainWindow):
             da = nd.buf_att.get()
             dae = nd.buf_att_err.get()
             dw = nd.buf_wr.get()
-            dth = nd.buf_theta.get()
-            dph = nd.buf_phi.get()
-            dthc = nd.buf_theta_cmd.get()
-            dphc = nd.buf_phi_cmd.get()
+            dth = nd.buf_beta.get()
+            dph = nd.buf_alpha.get()
+            dthc = nd.buf_beta_cmd.get()
+            dphc = nd.buf_alpha_cmd.get()
             df = nd.buf_thr.get()
 
         tn = 0.0
@@ -501,29 +486,19 @@ class Win(QtWidgets.QMainWindow):
 
         if dph.shape[0]:
             for i in range(4):
-                cv[f"phi_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
+                cv[f"alpha_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
 
         if dphc.shape[0]:
             for i in range(4):
-                cv[f"phic_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
+                cv[f"alphac_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
 
         if dth.shape[0]:
-            for i in range(4):
-                cv[f"tht_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
-
-            theta14_avg = 0.5 * (dth[:, 1] + dth[:, 4])
-            theta23_avg = 0.5 * (dth[:, 2] + dth[:, 3])
-            cv["theta_pair14"].setData(dth[:, 0], theta14_avg)
-            cv["theta_pair23"].setData(dth[:, 0], theta23_avg)
+            for i in range(2):
+                cv[f"beta_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
 
         if dthc.shape[0]:
-            for i in range(4):
-                cv[f"thtc_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
-
-            theta14_avg_cmd = 0.5 * (dthc[:, 1] + dthc[:, 4])
-            theta23_avg_cmd = 0.5 * (dthc[:, 2] + dthc[:, 3])
-            cv["theta_pair14_cmd"].setData(dthc[:, 0], theta14_avg_cmd)
-            cv["theta_pair23_cmd"].setData(dthc[:, 0], theta23_avg_cmd)
+            for i in range(2):
+                cv[f"betac_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
 
         self._update_max_label()
 
@@ -534,10 +509,16 @@ class Win(QtWidgets.QMainWindow):
             self._plots_act[0].setXRange(tl, tn, padding=0)
 
 
+def _spin(node):
+    try:
+        rclpy.spin(node)
+    except ExternalShutdownException:
+        pass
+
 def main():
     rclpy.init()
     node = VNode()
-    threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
+    threading.Thread(target=_spin, args=(node,), daemon=True).start()
 
     app = QtWidgets.QApplication(sys.argv)
     win = Win(node)
