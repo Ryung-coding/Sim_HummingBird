@@ -11,7 +11,7 @@
   <worldbody>
     <body name="body" pos="0 0 0.075">
       <freejoint name="root"/>
-      <inertial pos="0 0 0" quat="1 0 0 0" mass="3.5" diaginertia="0.055 0.055 0.090"/>
+      <inertial pos="0 0 0" quat="1 0 0 0" mass="3.12" diaginertia="0.055 0.055 0.090"/>
       <geom name="body_geom" type="mesh" mesh="body_mesh" rgba="0.62 0.64 0.66 1" contype="0" conaffinity="0"/>
       <geom name="landing_foot_fl" type="sphere" pos="0.10 0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
       <geom name="landing_foot_fr" type="sphere" pos="0.10 -0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
@@ -73,10 +73,10 @@
   </worldbody>
 
   <actuator>
-    <general name="BLDC1_thrust" site="prop1_site" gear="0 0 -1 0 0 -0.05" ctrlrange="0 100" ctrllimited="true"/>
-    <general name="BLDC2_thrust" site="prop2_site" gear="0 0 -1 0 0 +0.05" ctrlrange="0 100" ctrllimited="true"/>
-    <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.05" ctrlrange="0 100" ctrllimited="true"/>
-    <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.05" ctrlrange="0 100" ctrllimited="true"/>
+    <general name="BLDC1_thrust" site="prop1_site" gear="0 0 -1 0 0 -0.05" ctrlrange="0 20" ctrllimited="true"/>
+    <general name="BLDC2_thrust" site="prop2_site" gear="0 0 -1 0 0 +0.05" ctrlrange="0 20" ctrllimited="true"/>
+    <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.05" ctrlrange="0 20" ctrllimited="true"/>
+    <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.05" ctrlrange="0 20" ctrllimited="true"/>
 
     <position name="beta1_servo" joint="joint_beta1" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
     <position name="beta2_servo" joint="joint_beta2" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>

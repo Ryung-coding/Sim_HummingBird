@@ -258,7 +258,7 @@ inline TargetCMD attPath(double t)
   static constexpr double TUNE_SEC = 60.0;
   static constexpr double Z = 1.0;
   static constexpr double ROLL_AMP = 20.0 * M_PI / 180.0;
-  static constexpr double PITCH_AMP = 90.0 * M_PI / 180.0;
+  static constexpr double PITCH_AMP = 60.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
@@ -435,7 +435,7 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
+inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector3d& att_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
   using Vector10d = Eigen::Matrix<double, 10, 1>;
@@ -447,7 +447,8 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   static bool initialized = false;
   static AllocationOutput previous_cmd;
 
-  if (!initialized) {
+  if (!initialized) 
+  {
     previous_cmd.alpha = alpha_measured;
     previous_cmd.beta = beta_measured;
     previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::f_cmd_min, params::f_cmd_max));
@@ -469,7 +470,8 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   Vector6d W_now = Vector6d::Zero();
   Matrix610d J = Matrix610d::Zero();
 
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 4; ++i) 
+  {
     const double alpha = q(i);
     const double beta = q(4 + beta_index[i]);
     const double f = q(6 + i);
@@ -485,7 +487,8 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
     const Eigen::Vector3d de_dbeta(-cb * ca, 0.0, sb * ca);
 
     // D_i(v) = [r_i x v + sigma_i zeta v; v]
-    const auto wrenchDirection = [&](const Eigen::Vector3d& v) {
+    const auto wrenchDirection = [&](const Eigen::Vector3d& v) 
+    {
       Vector6d D;
       D.segment<3>(0) = r_i.cross(v) + reaction_sign[i] * params::zeta * v;
       D.segment<3>(3) = v;
@@ -521,15 +524,31 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   const Matrix106d J_dagger = W_q_inv * J.transpose() * JWJ_inv;
 
   // (4) q_dot = J_dagger W_dot_des + (I - J_dagger J) q_dot_star
-  const Vector10d q_dot_star = Vector10d::Zero();
+  // const Vector10d q_dot_star = Vector10d::Zero();
+  Vector10d q_dot_star = Vector10d::Zero();
+
+  const Eigen::Vector3d thrust_dir_ref = rpyToRot(att_cmd).transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
+  const double alpha_ref = std::clamp(std::asin(std::clamp(thrust_dir_ref(1), -1.0, 1.0)), -params::alpha_limit_rad, params::alpha_limit_rad);
+  const double beta_ref = std::atan2(-thrust_dir_ref(0), -thrust_dir_ref(2));
+  const double f_ref = 0.25 * force_cmd.norm();
+
+  for (int i = 0; i < 4; ++i) 
+  {
+    q_dot_star(i) = params::ada_null_alpha_gain * (alpha_ref - q(i));
+    q_dot_star(6 + i) = params::ada_null_f_gain * (f_ref - q(6 + i));
+  }
+  for (int i = 0; i < 2; ++i) 
+  {
+    const double beta_error = std::atan2(std::sin(beta_ref - q(4 + i)), std::cos(beta_ref - q(4 + i)));
+    q_dot_star(4 + i) = params::ada_null_beta_gain * beta_error;
+  }
+
   const Matrix1010d nullspace = Matrix1010d::Identity() - J_dagger * J;
   Vector10d q_dot = J_dagger * W_dot_des + nullspace * q_dot_star;
 
   // (13) sat(q_dot) = k_s q_dot
   double k_s = 1.0;
-  for (int i = 0; i < 10; ++i) {
-    if (std::abs(q_dot(i)) > params::ada_q_dot_max[i]) k_s = std::min(k_s, params::ada_q_dot_max[i] / std::abs(q_dot(i)));
-  }
+  for (int i = 0; i < 10; ++i) if (std::abs(q_dot(i)) > params::ada_q_dot_max[i]) k_s = std::min(k_s, params::ada_q_dot_max[i] / std::abs(q_dot(i)));
   q_dot *= k_s;
 
   // W(q), J(q) use the selected servo state; q_dot integration keeps the previous command state.
@@ -538,8 +557,16 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   q_cmd_prev.segment<2>(4) = previous_cmd.beta;
   const Vector10d q_cmd = q_cmd_prev + std::max(dt, 0.0) * q_dot;
 
+
+  // Position servos realize angle rates through a first-order inverse; direct thrust integrates f_dot.
+  // Vector10d q_cmd = q;
+  // q_cmd.segment<4>(0) += params::ada_tau_alpha * q_dot.segment<4>(0);
+  // q_cmd.segment<2>(4) += params::ada_tau_beta * q_dot.segment<2>(4);
+  // q_cmd.segment<4>(6) += std::max(dt, 0.0) * q_dot.segment<4>(6);
+
   AllocationOutput out;
-  for (int i = 0; i < 4; ++i) {
+  for (int i = 0; i < 4; ++i) 
+  {
     out.alpha(i) = std::clamp(q_cmd(i), -params::alpha_limit_rad, params::alpha_limit_rad);
     out.f(i) = std::clamp(q_cmd(6 + i), params::f_cmd_min, params::f_cmd_max);
   }

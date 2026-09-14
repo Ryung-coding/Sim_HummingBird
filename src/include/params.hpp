@@ -13,7 +13,7 @@ static constexpr int RATE_HZ = 400;
 
 
 // Model parameters -----------------------------------------------
-static constexpr double mass = 3.88;
+static constexpr double mass = 3.50;
 static constexpr double grav = 9.81;
 
 static constexpr std::array<double, 3> J = {0.030, 0.030, 0.050};
@@ -42,7 +42,7 @@ static constexpr double ER_NORM_MAX = 1.5;
 // Saturatation parameters -----------------------------------------------
 static constexpr double f_min = 1.0e-3;
 static constexpr double f_cmd_min = 1.0e-6;
-static constexpr double f_cmd_max = 100.0;
+static constexpr double f_cmd_max = 20.0;
 static constexpr double alpha_limit_rad = M_PI / 6.0;
 static constexpr double beta_limit_rad = M_PI;
 static constexpr double virtual_lambda = 1.0e-4;
@@ -57,7 +57,15 @@ static constexpr std::array<double, 10> ada_W_inv_diag = {1.0, 1.0, 1.0, 1.0, 1.
 // (13), order [alpha_dot1 alpha_dot2 alpha_dot3 alpha_dot4 beta_dot1 beta_dot2 f_dot1 f_dot2 f_dot3 f_dot4]
 static constexpr std::array<double, 10> ada_q_dot_max = {3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 80.0, 80.0, 80.0, 80.0};
 
-// allocation check tolerance ---
+// Nullspace target gains [1/s]
+static constexpr double ada_null_alpha_gain = 1.0;
+static constexpr double ada_null_beta_gain = 1.0;
+static constexpr double ada_null_f_gain = 1.0;
+
+// First-order position-servo inverse [s]
+static constexpr double ada_tau_alpha = 0.10;
+static constexpr double ada_tau_beta = 0.08;
+
 static constexpr double check_force_tol = 1.00;
 static constexpr double check_moment_tol = 2.00;
 }
