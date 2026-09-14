@@ -44,9 +44,11 @@ private:
 
     Eigen::Vector3d moment_cmd;
     Eigen::Vector3d force_cmd;
+    Eigen::Matrix<double, 6, 1> d;
 
     moment_cmd << msg->moment[0], msg->moment[1], msg->moment[2];
     force_cmd << msg->force[0], msg->force[1], msg->force[2];
+    for (int i = 0; i < 6; ++i) d(i) = msg->d[i];
 
     const rclcpp::Time current_time = now();
     double dt = (current_time - last_time_).seconds();
@@ -55,7 +57,7 @@ private:
     if (!(dt > 0.0) || dt > 0.2) dt = 1.0 / static_cast<double>(params::RATE_HZ);
 
     // const auto alloc = utils::allocation_a1b1(moment_cmd, force_cmd);
-    const auto alloc = utils::allocation_a4b2(moment_cmd, force_cmd, att_cmd_, alpha_measured_, beta_measured_, servo_read, dt);
+    const auto alloc = utils::allocation_a4b2(moment_cmd, force_cmd, d, att_cmd_, alpha_measured_, beta_measured_, servo_read, dt);
 
     const auto check = utils::checkAllocation(alloc, moment_cmd, force_cmd);
     if (check.problem) RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 500, "%s", check.message.c_str());

@@ -14,3 +14,5 @@ float64[3] imu_acc   # z-down IMU acceleration [m/s^2]
 
 float64[2] beta     # beta_1, beta_2 [rad]
 float64[4] alpha   # alpha_1 ... alpha_4 [rad]
+
+float64[6] lidar   # front, back, left, right, up, down [m], -1: no hit

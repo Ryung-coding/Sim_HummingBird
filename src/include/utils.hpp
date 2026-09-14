@@ -384,6 +384,156 @@ inline TargetCMD stepAttPath(double t)
   return cmd;
 }
 
+inline TargetCMD throughWallPath(double t)
+{
+  static constexpr double TAKEOFF_SEC = 1.0;
+  static constexpr double STRAIGHT_SEC = 3.0;
+  static constexpr double TILT_SEC = 3.0;
+  static constexpr double DIAG_SEC = 3.0;
+  static constexpr double EXIT_SEC = 2.0;
+
+  static constexpr double Z0 = 1.0;
+  static constexpr double X_TURN = 1.5;
+  static constexpr double X_DIAG_END = 3.0;
+  static constexpr double Z_DIAG_END = 2.5;
+  static constexpr double X_END = 4.0;
+
+  static constexpr double PITCH_45 = M_PI / 4.0;
+
+  static constexpr double ONE_WAY_SEC =
+      STRAIGHT_SEC + TILT_SEC + DIAG_SEC + TILT_SEC + EXIT_SEC;
+
+  static constexpr double CYCLE_SEC = 2.0 * ONE_WAY_SEC;
+
+  const auto smooth = [](double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
+  };
+
+  TargetCMD cmd;
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = 0.0;
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  // Initial takeoff only once
+  if (t < TAKEOFF_SEC) {
+    const double s = smooth(t / TAKEOFF_SEC);
+    cmd.z = Z0 * s;
+    return cmd;
+  }
+
+  // Repeat 0 -> 4 -> 0
+  double tm = std::fmod(t - TAKEOFF_SEC, CYCLE_SEC);
+
+  // =========================================================
+  // Forward : x = 0 -> 4
+  // =========================================================
+  if (tm < ONE_WAY_SEC) {
+
+    if (tm < STRAIGHT_SEC) {
+      const double s = smooth(tm / STRAIGHT_SEC);
+      cmd.x = X_TURN * s;
+      cmd.z = Z0;
+      return cmd;
+    }
+
+    tm -= STRAIGHT_SEC;
+
+    if (tm < TILT_SEC) {
+      const double s = smooth(tm / TILT_SEC);
+      cmd.x = X_TURN;
+      cmd.z = Z0;
+      cmd.pitch = PITCH_45 * s;
+      return cmd;
+    }
+
+    tm -= TILT_SEC;
+
+    if (tm < DIAG_SEC) {
+      const double s = smooth(tm / DIAG_SEC);
+      cmd.x = X_TURN + (X_DIAG_END - X_TURN) * s;
+      cmd.z = Z0 + (Z_DIAG_END - Z0) * s;
+      cmd.pitch = PITCH_45;
+      return cmd;
+    }
+
+    tm -= DIAG_SEC;
+
+    if (tm < TILT_SEC) {
+      const double s = smooth(tm / TILT_SEC);
+      cmd.x = X_DIAG_END;
+      cmd.z = Z_DIAG_END;
+      cmd.pitch = PITCH_45 * (1.0 - s);
+      return cmd;
+    }
+
+    tm -= TILT_SEC;
+
+    const double s = smooth(tm / EXIT_SEC);
+    cmd.x = X_DIAG_END + (X_END - X_DIAG_END) * s;
+    cmd.z = Z_DIAG_END;
+    return cmd;
+  }
+
+  // =========================================================
+  // Return : x = 4 -> 0
+  // =========================================================
+  tm -= ONE_WAY_SEC;
+
+  // 4.0 -> 3.0
+  if (tm < EXIT_SEC) {
+    const double s = smooth(tm / EXIT_SEC);
+    cmd.x = X_END + (X_DIAG_END - X_END) * s;
+    cmd.z = Z_DIAG_END;
+    return cmd;
+  }
+
+  tm -= EXIT_SEC;
+
+  // At x = 3.0, tilt 0 -> 45 deg
+  if (tm < TILT_SEC) {
+    const double s = smooth(tm / TILT_SEC);
+    cmd.x = X_DIAG_END;
+    cmd.z = Z_DIAG_END;
+    cmd.pitch = PITCH_45 * s;
+    return cmd;
+  }
+
+  tm -= TILT_SEC;
+
+  // Diagonal backward
+  if (tm < DIAG_SEC) {
+    const double s = smooth(tm / DIAG_SEC);
+    cmd.x = X_DIAG_END + (X_TURN - X_DIAG_END) * s;
+    cmd.z = Z_DIAG_END + (Z0 - Z_DIAG_END) * s;
+    cmd.pitch = PITCH_45;
+    return cmd;
+  }
+
+  tm -= DIAG_SEC;
+
+  // At x = 1.5, tilt 45 -> 0 deg
+  if (tm < TILT_SEC) {
+    const double s = smooth(tm / TILT_SEC);
+    cmd.x = X_TURN;
+    cmd.z = Z0;
+    cmd.pitch = PITCH_45 * (1.0 - s);
+    return cmd;
+  }
+
+  tm -= TILT_SEC;
+
+  // 1.5 -> 0.0
+  const double s = smooth(tm / STRAIGHT_SEC);
+  cmd.x = X_TURN * (1.0 - s);
+  cmd.z = Z0;
+
+  return cmd;
+}
+
 // Control Allocation utils ===========================================
 inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
 {
@@ -435,7 +585,7 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector3d& att_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
+inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Matrix<double, 6, 1>& d, const Eigen::Vector3d& att_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
   using Vector10d = Eigen::Matrix<double, 10, 1>;
@@ -531,16 +681,45 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   const double alpha_ref = std::clamp(std::asin(std::clamp(thrust_dir_ref(1), -1.0, 1.0)), -params::alpha_limit_rad, params::alpha_limit_rad);
   const double beta_ref = std::atan2(-thrust_dir_ref(0), -thrust_dir_ref(2));
   const double f_ref = 0.25 * force_cmd.norm();
+  const double RMS_Fx = d(0);
+  const double RMS_Fy = d(1);
+  const double delta_alpha = params::ada_rms_alpha_gain * RMS_Fy * RMS_Fy;
+  const double delta_beta = params::ada_rms_beta_gain * RMS_Fx * RMS_Fx;
+  const double alpha_soft_limit = params::alpha_limit_rad - params::ada_alpha_soft_margin;
+  const double beta_soft_limit = params::beta_limit_rad - params::ada_beta_soft_margin;
+
+  Eigen::Vector4d alpha_target;
+  Eigen::Vector2d beta_target;
+
+  // RMS-dependent symmetric tilt spreading
+  // Fx -> beta1(+), beta2(-)
+  // Fy -> alpha1,2(+), alpha3,4(-)
+  alpha_target << alpha_ref + delta_alpha, alpha_ref + delta_alpha,
+                  alpha_ref - delta_alpha, alpha_ref - delta_alpha;
+  beta_target << beta_ref + delta_beta, beta_ref - delta_beta;
 
   for (int i = 0; i < 4; ++i) 
   {
-    q_dot_star(i) = params::ada_null_alpha_gain * (alpha_ref - q(i));
+    // Tracking cost pulls tilt toward att_cmd + RMS spreading target.
+    q_dot_star(i) = params::ada_null_alpha_gain * (alpha_target(i) - q(i));
+
+    // Soft-limit penalty is inactive inside the safe region.
+    // Outside the soft limit, it strongly pushes the servo angle back inward.
+    if (std::abs(q(i)) > alpha_soft_limit) {
+      const double limit_error = std::abs(q(i)) - alpha_soft_limit;
+      q_dot_star(i) -= params::ada_limit_alpha_gain * std::copysign(limit_error, q(i));
+    }
+
     q_dot_star(6 + i) = params::ada_null_f_gain * (f_ref - q(6 + i));
   }
   for (int i = 0; i < 2; ++i) 
   {
-    const double beta_error = std::atan2(std::sin(beta_ref - q(4 + i)), std::cos(beta_ref - q(4 + i)));
-    q_dot_star(4 + i) = params::ada_null_beta_gain * beta_error;
+    q_dot_star(4 + i) = params::ada_null_beta_gain * (beta_target(i) - q(4 + i));
+
+    if (std::abs(q(4 + i)) > beta_soft_limit) {
+      const double limit_error = std::abs(q(4 + i)) - beta_soft_limit;
+      q_dot_star(4 + i) -= params::ada_limit_beta_gain * std::copysign(limit_error, q(4 + i));
+    }
   }
 
   const Matrix1010d nullspace = Matrix1010d::Identity() - J_dagger * J;

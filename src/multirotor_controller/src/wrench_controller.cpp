@@ -4,6 +4,7 @@
 #include <multirotor_interfaces/msg/wrench.hpp>
 
 #include <Eigen/Dense>
+#include <cmath>
 #include <functional>
 #include <params.hpp>
 #include <utils.hpp>
@@ -27,6 +28,7 @@ public:
     W_.setZero();
     pos_i_.setZero();
     att_i_.setZero();
+    disturbance_rms_sq_.setZero();
   }
 
 private:
@@ -96,6 +98,27 @@ private:
     return M;
   }
 
+  Eigen::Matrix<double, 6, 1> disturbanceObserver(
+    const Eigen::Vector3d& pos_error,
+    const Eigen::Vector3d& att_error,
+    double dt)
+  {
+    Eigen::Matrix<double, 6, 1> error;
+    error << pos_error, att_error;
+
+    const Eigen::Matrix<double, 6, 1> error_sq = error.array().square().matrix();
+
+    if (!disturbance_observer_initialized_) {
+      disturbance_rms_sq_ = error_sq;
+      disturbance_observer_initialized_ = true;
+    } else {
+      const double alpha = 1.0 - std::exp(-dt / params::disturbance_rms_tau);
+      disturbance_rms_sq_ += alpha * (error_sq - disturbance_rms_sq_);
+    }
+
+    return disturbance_rms_sq_.cwiseMax(0.0).cwiseSqrt();
+  }
+
   void tryPublish()
   {
     if (!have_state_ || !have_cmd_) return;
@@ -115,6 +138,13 @@ private:
 
     const Eigen::Vector3d M_body = attitudeController(R, Rd, dt);
 
+    const Eigen::Vector3d pos_error = pos_cmd_ - pos_;
+    Eigen::Vector3d att_error = att_cmd_ - utils::rotToRpy(R);
+    for (int i = 0; i < 3; ++i) {
+      att_error(i) = std::atan2(std::sin(att_error(i)), std::cos(att_error(i)));
+    }
+    const Eigen::Matrix<double, 6, 1> d = disturbanceObserver(pos_error, att_error, dt);
+
     multirotor_interfaces::msg::Wrench msg;
 
     msg.force[0] = static_cast<float>(F_body(0));
@@ -124,6 +154,8 @@ private:
     msg.moment[0] = static_cast<float>(M_body(0));
     msg.moment[1] = static_cast<float>(M_body(1));
     msg.moment[2] = static_cast<float>(M_body(2));
+
+    for (int i = 0; i < 6; ++i) msg.d[i] = static_cast<float>(d(i));
 
     pub_wrench_->publish(msg);
   }
@@ -143,9 +175,11 @@ private:
 
   Eigen::Vector3d pos_i_;
   Eigen::Vector3d att_i_;
+  Eigen::Matrix<double, 6, 1> disturbance_rms_sq_;
 
   bool have_cmd_{false};
   bool have_state_{false};
+  bool disturbance_observer_initialized_{false};
 };
 
 int main(int argc, char** argv)

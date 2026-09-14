@@ -44,6 +44,23 @@ THRUST_ARROW_MAX_LEN = 1.20
 THRUST_ARROW_WIDTH = 0.008
 THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
 
+LIDAR_MAX_RANGE = 3.0
+SHOW_LIDAR_RAYS = True
+LIDAR_RAY_WIDTH = 0.004
+LIDAR_HIT_RGBA = np.array([0.05, 0.80, 1.00, 0.90], dtype=np.float32)
+LIDAR_NO_HIT_RGBA = np.array([0.35, 0.55, 0.60, 0.20], dtype=np.float32)
+
+AIRFLOW_RANGE = 0.50
+AIRFLOW_FADE_RANGE = 0.10
+AIRFLOW_TIME_CONSTANT = 0.45
+AIR_DENSITY = 1.225
+AIRFLOW_VELOCITY_STD = np.array([3.0, 3.0, 1.5], dtype=float)
+AIRFLOW_DRAG_COEFF = np.array([1.10, 1.10, 1.00], dtype=float)
+AIRFLOW_REFERENCE_AREA = np.array([0.20, 0.20, 0.08], dtype=float)
+AIRFLOW_CP_OFFSET_BODY = np.array([0.0, 0.0, 0.01], dtype=float)
+AIRFLOW_FORCE_LIMIT = 6.0
+AIRFLOW_TORQUE_LIMIT = 0.15
+
 
 def to_zdown(v):
     return np.array([v[0], -v[1], -v[2]], dtype=float)
@@ -128,6 +145,7 @@ class PlantRosNode(Node):
         self.model = mujoco.MjModel.from_xml_path(xml_path)
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = 1.0 / PHYSICS_HZ
+        mujoco.mj_forward(self.model, self.data)
 
         if self.model.nu != N_CTRL:
             self.get_logger().warn(f"model.nu is {self.model.nu}, but N_CTRL is {N_CTRL}")
@@ -154,8 +172,22 @@ class PlantRosNode(Node):
             self.site_id("prop4_site"),
         ]
 
+        self.bid_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "body")
+        if self.bid_body < 0:
+            raise RuntimeError("body not found: body")
+
+        lidar_names = ("front", "back", "left", "right", "up", "down")
+        self.sid_lidar = [
+            self.sensor_id(f"lidar_{name}_range") for name in lidar_names
+        ]
+        self.lidar_site_ids = [
+            self.site_id(f"lidar_{name}") for name in lidar_names
+        ]
+
         self.s_adr = self.model.sensor_adr
         self.s_dim = self.model.sensor_dim
+        self.lidar_ranges = self.read_lidar_ranges()
+        self.airflow_state = np.zeros(3, dtype=float)
 
         self.ctrl_recv = np.zeros(N_CTRL, dtype=float)
         self.ctrl = np.zeros(N_CTRL, dtype=float)
@@ -200,6 +232,72 @@ class PlantRosNode(Node):
         dim = self.s_dim[sid]
 
         return np.array(self.data.sensordata[adr:adr + dim], dtype=float)
+
+    def read_lidar_ranges(self):
+        lidar = np.array([
+            self.sensing_state(sid)[0] for sid in self.sid_lidar
+        ], dtype=float)
+        lidar[(lidar < 0.0) | (lidar > LIDAR_MAX_RANGE)] = -1.0
+        return lidar
+
+    def apply_wall_airflow(self):
+        self.lidar_ranges = self.read_lidar_ranges()
+
+        decay = math.exp(
+            -1.0 / (PHYSICS_HZ * AIRFLOW_TIME_CONSTANT)
+        )
+        self.airflow_state = (
+            decay * self.airflow_state
+            + math.sqrt(1.0 - decay * decay)
+            * np.random.normal(size=self.airflow_state.shape)
+        )
+
+        nearby = self.lidar_ranges[
+            (self.lidar_ranges >= 0.0)
+            & (self.lidar_ranges < AIRFLOW_RANGE)
+        ]
+
+        activation = 0.0
+        if nearby.size >= 2:
+            activation = np.clip(
+                (AIRFLOW_RANGE - np.min(nearby)) / AIRFLOW_FADE_RANGE,
+                0.0,
+                1.0
+            )
+            activation = activation * activation * (3.0 - 2.0 * activation)
+
+        wind_velocity = AIRFLOW_VELOCITY_STD * self.airflow_state
+        body_velocity = self.sensing_state(self.sid_body_linvel)
+        relative_wind_world = wind_velocity - body_velocity
+
+        R_body_world = np.asarray(
+            self.data.xmat[self.bid_body], dtype=float
+        ).reshape(3, 3)
+        relative_wind_body = R_body_world.T @ relative_wind_world
+        airflow_force_body = (
+            0.5
+            * AIR_DENSITY
+            * AIRFLOW_DRAG_COEFF
+            * AIRFLOW_REFERENCE_AREA
+            * relative_wind_body
+            * np.abs(relative_wind_body)
+        )
+        airflow_force = activation * (R_body_world @ airflow_force_body)
+        airflow_torque = activation * (
+            R_body_world
+            @ np.cross(AIRFLOW_CP_OFFSET_BODY, airflow_force_body)
+        )
+
+        force_norm = np.linalg.norm(airflow_force)
+        if force_norm > AIRFLOW_FORCE_LIMIT:
+            airflow_force *= AIRFLOW_FORCE_LIMIT / force_norm
+
+        torque_norm = np.linalg.norm(airflow_torque)
+        if torque_norm > AIRFLOW_TORQUE_LIMIT:
+            airflow_torque *= AIRFLOW_TORQUE_LIMIT / torque_norm
+
+        self.data.xfrc_applied[self.bid_body, :3] = airflow_force
+        self.data.xfrc_applied[self.bid_body, 3:] = airflow_torque
 
     def input_callback(self, msg):
         f = np.asarray(msg.f, dtype=float)
@@ -282,6 +380,7 @@ class PlantRosNode(Node):
 
         msg.beta = beta.tolist()
         msg.alpha = alpha.tolist()
+        msg.lidar = self.lidar_ranges.tolist()
 
         return msg
 
@@ -300,6 +399,7 @@ class PlantRosNode(Node):
                 self.apply_control()
 
                 while now >= next_step:
+                    self.apply_wall_airflow()
                     mujoco.mj_step(self.model, self.data)
                     next_step += dt_step
 
@@ -334,7 +434,6 @@ class PlantRosNode(Node):
             return
 
         scn = viewer.user_scn
-        scn.ngeom = 0
 
         for i, site_id in enumerate(self.prop_site_ids):
             if scn.ngeom >= len(scn.geoms):
@@ -374,6 +473,43 @@ class PlantRosNode(Node):
             )
             scn.ngeom += 1
 
+    def update_lidar_rays(self, viewer):
+        if not SHOW_LIDAR_RAYS or not hasattr(viewer, "user_scn"):
+            return
+
+        scn = viewer.user_scn
+
+        for distance, site_id in zip(self.lidar_ranges, self.lidar_site_ids):
+            if scn.ngeom >= len(scn.geoms):
+                return
+
+            hit = distance >= 0.0
+            length = min(float(distance), LIDAR_MAX_RANGE) if hit else LIDAR_MAX_RANGE
+            pos = np.array(self.data.site_xpos[site_id], dtype=np.float64)
+            R_site = np.array(
+                self.data.site_xmat[site_id],
+                dtype=np.float64
+            ).reshape(3, 3)
+            tip = pos + length * R_site[:, 2]
+
+            geom = scn.geoms[scn.ngeom]
+            mujoco.mjv_initGeom(
+                geom,
+                mujoco.mjtGeom.mjGEOM_LINE,
+                np.zeros(3, dtype=np.float64),
+                np.zeros(3, dtype=np.float64),
+                np.eye(3, dtype=np.float64).reshape(9),
+                LIDAR_HIT_RGBA if hit else LIDAR_NO_HIT_RGBA
+            )
+            mujoco.mjv_connector(
+                geom,
+                mujoco.mjtGeom.mjGEOM_LINE,
+                LIDAR_RAY_WIDTH,
+                pos,
+                tip
+            )
+            scn.ngeom += 1
+
     def viewer_loop(self):
         try:
             with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
@@ -381,7 +517,10 @@ class PlantRosNode(Node):
 
                 while viewer.is_running() and rclpy.ok() and not self.stop_event.is_set():
                     with self.lock:
+                        if hasattr(viewer, "user_scn"):
+                            viewer.user_scn.ngeom = 0
                         self.update_thrust_arrows(viewer)
+                        self.update_lidar_rays(viewer)
                         viewer.sync()
 
                     time.sleep(0.002)

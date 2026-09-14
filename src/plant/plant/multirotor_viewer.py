@@ -31,6 +31,16 @@ C_O = "#f58231"
 C3 = [C_R, C_G, C_B]
 C4 = [C_R, C_G, C_B, C_O]
 
+ROTOR_XY = np.array([
+    [0.175, 0.175],
+    [-0.175, 0.175],
+    [-0.175, -0.175],
+    [0.175, -0.175]
+], dtype=float)
+BETA_INDEX = np.array([0, 1, 1, 0], dtype=int)
+TILT_VECTOR_SCALE = 0.35
+TILT_ARROW_HEAD = 0.035
+
 
 class Ring:
     def __init__(self, cap, w):
@@ -75,6 +85,37 @@ def att_cmd_to_rpy_deg(att_cmd):
     return np.array([roll, pitch, yaw], dtype=float) * RAD2DEG
 
 
+def tilt_xy_components(alpha_deg, beta_deg):
+    alpha = np.asarray(alpha_deg, dtype=float) / RAD2DEG
+    beta = np.asarray(beta_deg, dtype=float)[BETA_INDEX] / RAD2DEG
+
+    # Same body-frame thrust direction used by allocation_a4b2().
+    return np.column_stack((
+        -np.sin(beta) * np.cos(alpha),
+        np.sin(alpha)
+    ))
+
+
+def vector_polyline(origin, vector):
+    tip = origin + TILT_VECTOR_SCALE * vector
+    delta = tip - origin
+    length = np.linalg.norm(delta)
+
+    if length < 1.0e-9:
+        return np.array([origin[0], tip[0]]), np.array([origin[1], tip[1]])
+
+    unit = delta / length
+    normal = np.array([-unit[1], unit[0]])
+    head = min(TILT_ARROW_HEAD, 0.4 * length)
+    base = tip - head * unit
+    left = base + 0.55 * head * normal
+    right = base - 0.55 * head * normal
+
+    x = np.array([origin[0], tip[0], np.nan, tip[0], left[0], np.nan, tip[0], right[0]])
+    y = np.array([origin[1], tip[1], np.nan, tip[1], left[1], np.nan, tip[1], right[1]])
+    return x, y
+
+
 class VNode(Node):
     def __init__(self):
         super().__init__("multirotor_viewer")
@@ -100,6 +141,7 @@ class VNode(Node):
         self.buf_att_err = Ring(MAX_SAMPLES, 4)
 
         self.buf_wr = Ring(MAX_SAMPLES, 7)
+        self.buf_d = Ring(MAX_SAMPLES, 7)
 
         self.buf_beta = Ring(MAX_SAMPLES, 3)
         self.buf_alpha = Ring(MAX_SAMPLES, 5)
@@ -176,6 +218,15 @@ class VNode(Node):
 
         with self.lock:
             self.buf_wr.push([t, m.force[0], m.force[1], m.force[2], m.moment[0], m.moment[1], m.moment[2]])
+            self.buf_d.push([
+                t,
+                m.d[0],
+                m.d[1],
+                m.d[2],
+                m.d[3] * RAD2DEG,
+                m.d[4] * RAD2DEG,
+                m.d[5] * RAD2DEG
+            ])
 
     def _cb_input(self, m):
         t = self._t()
@@ -198,8 +249,8 @@ def _cmd_pen(w=2):
     return pg.mkPen(color="k", width=w, style=QtCore.Qt.DashLine)
 
 
-def _mkplot(glw, r, c, title, ylabel):
-    p = glw.addPlot(row=r, col=c, title=title)
+def _mkplot(glw, r, c, title, ylabel, **layout):
+    p = glw.addPlot(row=r, col=c, title=title, **layout)
     p.showGrid(x=True, y=True, alpha=0.3)
     p.setLabel("left", ylabel)
     p.getAxis("left").enableAutoSIPrefix(False)
@@ -231,15 +282,23 @@ class Win(QtWidgets.QMainWindow):
 
         self._cv = {}
         self._plots_state = []
+        self._plots_nullspace = []
+        self._plots_disturbance = []
         self._plots_act = []
 
         self.state_glw = pg.GraphicsLayoutWidget()
+        self.nullspace_glw = pg.GraphicsLayoutWidget()
+        self.disturbance_glw = pg.GraphicsLayoutWidget()
         self.act_glw = pg.GraphicsLayoutWidget()
 
         tabs.addTab(self.state_glw, "State")
+        tabs.addTab(self.nullspace_glw, "Nullspace XY")
+        tabs.addTab(self.disturbance_glw, "Disturbance RMS")
         tabs.addTab(self.act_glw, "Actuator")
 
         self._build_state_tab()
+        self._build_nullspace_tab()
+        self._build_disturbance_tab()
         self._build_actuator_tab()
 
         self._timer = QtCore.QTimer()
@@ -292,6 +351,164 @@ class Win(QtWidgets.QMainWindow):
 
         for p in self._plots_state[-3:]:
             p.showAxis("bottom")
+            p.setLabel("bottom", "time [s]")
+
+    def _build_nullspace_tab(self):
+        p_xy = _mkplot(
+            self.nullspace_glw,
+            0,
+            0,
+            "Rotor tilt direction in body XY plane",
+            "body y [m]",
+            rowspan=3
+        )
+        p_xy.setLabel("bottom", "body x [m]")
+        p_xy.setAspectLocked(True)
+        p_xy.setXRange(-0.58, 0.58, padding=0)
+        p_xy.setYRange(-0.58, 0.58, padding=0)
+        p_xy.addLine(x=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
+        p_xy.addLine(y=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
+
+        for i, (origin, color) in enumerate(zip(ROTOR_XY, C4)):
+            p_xy.plot(
+                [0.0, origin[0]],
+                [0.0, origin[1]],
+                pen=pg.mkPen("#888888", width=2)
+            )
+            p_xy.plot(
+                [origin[0]],
+                [origin[1]],
+                pen=None,
+                symbol="o",
+                symbolSize=13,
+                symbolBrush=color,
+                symbolPen=pg.mkPen("k")
+            )
+            rotor_label = pg.TextItem(f"R{i + 1}", color=color, anchor=(0.5, 1.4))
+            rotor_label.setPos(origin[0], origin[1])
+            p_xy.addItem(rotor_label)
+
+        p_xy.plot(
+            [0.0, 0.10],
+            [0.0, 0.0],
+            pen=pg.mkPen("#555555", width=3)
+        )
+        x_label = pg.TextItem("+x", color="#333333", anchor=(0.0, 0.5))
+        x_label.setPos(0.11, 0.0)
+        p_xy.addItem(x_label)
+
+        p_xy.plot(
+            [0.0, 0.0],
+            [0.0, 0.10],
+            pen=pg.mkPen("#555555", width=3)
+        )
+        y_label = pg.TextItem("+y", color="#333333", anchor=(0.5, 1.0))
+        y_label.setPos(0.0, 0.11)
+        p_xy.addItem(y_label)
+
+        self._xy_actual = []
+        self._xy_cmd = []
+        for i, color in enumerate(C4):
+            cmd_curve = p_xy.plot(
+                pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine),
+                name="commanded tilt" if i == 0 else None,
+                connect="finite"
+            )
+            actual_curve = p_xy.plot(
+                pen=pg.mkPen(color=color, width=3),
+                name="measured tilt" if i == 0 else None,
+                connect="finite"
+            )
+            cmd_curve.setZValue(3)
+            actual_curve.setZValue(4)
+            self._xy_cmd.append(cmd_curve)
+            self._xy_actual.append(actual_curve)
+
+        p_dxy = _mkplot(
+            self.nullspace_glw,
+            0,
+            1,
+            "RMS inputs driving symmetric spreading",
+            "d RMS [m]"
+        )
+        self._cv["null_d_x"] = p_dxy.plot(pen=_pen(C_R), name="d_x -> β spreading")
+        self._cv["null_d_y"] = p_dxy.plot(pen=_pen(C_G), name="d_y -> α spreading")
+        self._plots_nullspace.append(p_dxy)
+
+        p_spread = _mkplot(
+            self.nullspace_glw,
+            1,
+            1,
+            "Symmetric tilt component",
+            "spreading [deg]"
+        )
+        self._cv["alpha_spread"] = p_spread.plot(pen=_pen(C_G), name="Δα measured")
+        self._cv["alpha_spread_cmd"] = _bring_front(
+            p_spread.plot(
+                pen=pg.mkPen(color=C_G, width=2, style=QtCore.Qt.DashLine),
+                name="Δα commanded"
+            )
+        )
+        self._cv["beta_spread"] = p_spread.plot(pen=_pen(C_R), name="Δβ measured")
+        self._cv["beta_spread_cmd"] = _bring_front(
+            p_spread.plot(
+                pen=pg.mkPen(color=C_R, width=2, style=QtCore.Qt.DashLine),
+                name="Δβ commanded"
+            )
+        )
+        self._plots_nullspace.append(p_spread)
+
+        p_spread.setXLink(p_dxy)
+        p_dxy.hideAxis("bottom")
+        p_spread.setLabel("bottom", "time [s]")
+
+        self.nullspace_label = pg.LabelItem(justify="left")
+        self.nullspace_label.setText(
+            "<div style='font-size:13pt; color:#111;'>"
+            "<b>Nullspace tilt diagnostics</b><br><br>Waiting for data..."
+            "</div>"
+        )
+        self.nullspace_glw.addItem(self.nullspace_label, row=2, col=1)
+
+    def _build_disturbance_tab(self):
+        pos_lbl = ["x", "y", "z"]
+        att_lbl = ["roll", "pitch", "yaw"]
+
+        for c in range(3):
+            p = _mkplot(
+                self.disturbance_glw,
+                0,
+                c,
+                f"d_{pos_lbl[c]}",
+                f"d_{pos_lbl[c]} RMS [m]"
+            )
+            self._cv[f"dpos{c}"] = p.plot(
+                pen=_pen(C3[c]),
+                name=f"d_{pos_lbl[c]}"
+            )
+            self._plots_disturbance.append(p)
+
+        for c in range(3):
+            p = _mkplot(
+                self.disturbance_glw,
+                1,
+                c,
+                f"d_{att_lbl[c]}",
+                f"d_{att_lbl[c]} RMS [deg]"
+            )
+            self._cv[f"datt{c}"] = p.plot(
+                pen=_pen(C3[c]),
+                name=f"d_{att_lbl[c]}"
+            )
+            self._plots_disturbance.append(p)
+
+        for p in self._plots_disturbance[1:]:
+            p.setXLink(self._plots_disturbance[0])
+
+        for p in self._plots_disturbance[:3]:
+            p.hideAxis("bottom")
+
+        for p in self._plots_disturbance[-3:]:
             p.setLabel("bottom", "time [s]")
 
     def _build_actuator_tab(self):
@@ -404,6 +621,52 @@ class Win(QtWidgets.QMainWindow):
             "</div>"
         )
 
+    def _update_xy_vectors(self, alpha_data, beta_data, curves):
+        if not alpha_data.shape[0] or not beta_data.shape[0]:
+            return
+
+        vectors = tilt_xy_components(alpha_data[-1, 1:5], beta_data[-1, 1:3])
+        for i, curve in enumerate(curves):
+            x, y = vector_polyline(ROTOR_XY[i], vectors[i])
+            curve.setData(x, y, connect="finite")
+
+    def _update_nullspace_label(self, dd, dw, dph, dth, dphc, dthc):
+        if not dd.shape[0]:
+            return
+
+        d_now = dd[-1, 1:7]
+        force_now = dw[-1, 1:4] if dw.shape[0] else np.full(3, np.nan)
+        alpha_now = dph[-1, 1:5] if dph.shape[0] else np.full(4, np.nan)
+        beta_now = dth[-1, 1:3] if dth.shape[0] else np.full(2, np.nan)
+        alpha_cmd = dphc[-1, 1:5] if dphc.shape[0] else np.full(4, np.nan)
+        beta_cmd = dthc[-1, 1:3] if dthc.shape[0] else np.full(2, np.nan)
+
+        alpha_spread = 0.25 * (alpha_now[0] + alpha_now[1] - alpha_now[2] - alpha_now[3])
+        beta_spread = 0.5 * (beta_now[0] - beta_now[1])
+        alpha_spread_cmd = 0.25 * (alpha_cmd[0] + alpha_cmd[1] - alpha_cmd[2] - alpha_cmd[3])
+        beta_spread_cmd = 0.5 * (beta_cmd[0] - beta_cmd[1])
+
+        self.nullspace_label.setText(
+            "<div style='font-size:12pt; color:#111;'>"
+            "<b>Current nullspace tilt diagnostics</b><br>"
+            f"d_pos RMS [m] = [{d_now[0]:.3f}, {d_now[1]:.3f}, {d_now[2]:.3f}]<br>"
+            f"d_att RMS [deg] = [{d_now[3]:.2f}, {d_now[4]:.2f}, {d_now[5]:.2f}]<br>"
+            f"F_body [N] = [{force_now[0]:.2f}, {force_now[1]:.2f}, {force_now[2]:.2f}]<br><br>"
+            f"Δα measured / commanded = {alpha_spread:.2f} / {alpha_spread_cmd:.2f} deg<br>"
+            f"Δβ measured / commanded = {beta_spread:.2f} / {beta_spread_cmd:.2f} deg<br>"
+            f"α measured [deg] = [{alpha_now[0]:.1f}, {alpha_now[1]:.1f}, "
+            f"{alpha_now[2]:.1f}, {alpha_now[3]:.1f}]<br>"
+            f"α commanded [deg] = [{alpha_cmd[0]:.1f}, {alpha_cmd[1]:.1f}, "
+            f"{alpha_cmd[2]:.1f}, {alpha_cmd[3]:.1f}]<br>"
+            f"β measured / commanded [deg] = [{beta_now[0]:.1f}, {beta_now[1]:.1f}] / "
+            f"[{beta_cmd[0]:.1f}, {beta_cmd[1]:.1f}]<br><br>"
+            "<b>Mapping</b>: d_y -> α1,2(+), α3,4(-); d_x -> β1(+), β2(-)<br>"
+            "β1: R1,R4; β2: R2,R3<br>"
+            "XY arrows show e_xy = [-sin(β)cos(α), sin(α)] × 0.35 m.<br>"
+            "Solid: measured, dashed: commanded"
+            "</div>"
+        )
+
     def _upd(self):
         nd = self.node
 
@@ -415,6 +678,7 @@ class Win(QtWidgets.QMainWindow):
             da = nd.buf_att.get()
             dae = nd.buf_att_err.get()
             dw = nd.buf_wr.get()
+            dd = nd.buf_d.get()
             dth = nd.buf_beta.get()
             dph = nd.buf_alpha.get()
             dthc = nd.buf_beta_cmd.get()
@@ -422,7 +686,7 @@ class Win(QtWidgets.QMainWindow):
             df = nd.buf_thr.get()
 
         tn = 0.0
-        for d in (dp, dc, dpe, dr, da, dae, dw, dth, dph, dthc, dphc, df):
+        for d in (dp, dc, dpe, dr, da, dae, dw, dd, dth, dph, dthc, dphc, df):
             if d.shape[0]:
                 tn = max(tn, d[-1, 0])
 
@@ -441,6 +705,7 @@ class Win(QtWidgets.QMainWindow):
         da = tr(da)
         dae = tr(dae)
         dw = tr(dw)
+        dd = tr(dd)
         dth = tr(dth)
         dph = tr(dph)
         dthc = tr(dthc)
@@ -463,6 +728,13 @@ class Win(QtWidgets.QMainWindow):
             for i in range(3):
                 cv[f"F{i}"].setData(dw[:, 0], dw[:, 1 + i])
                 cv[f"M{i}"].setData(dw[:, 0], dw[:, 4 + i])
+
+        if dd.shape[0]:
+            for i in range(3):
+                cv[f"dpos{i}"].setData(dd[:, 0], dd[:, 1 + i])
+                cv[f"datt{i}"].setData(dd[:, 0], dd[:, 4 + i])
+            cv["null_d_x"].setData(dd[:, 0], dd[:, 1])
+            cv["null_d_y"].setData(dd[:, 0], dd[:, 2])
 
         if dr.shape[0]:
             for i in range(3):
@@ -487,23 +759,41 @@ class Win(QtWidgets.QMainWindow):
         if dph.shape[0]:
             for i in range(4):
                 cv[f"alpha_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
+            alpha_spread = 0.25 * (dph[:, 1] + dph[:, 2] - dph[:, 3] - dph[:, 4])
+            cv["alpha_spread"].setData(dph[:, 0], alpha_spread)
 
         if dphc.shape[0]:
             for i in range(4):
                 cv[f"alphac_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
+            alpha_spread_cmd = 0.25 * (dphc[:, 1] + dphc[:, 2] - dphc[:, 3] - dphc[:, 4])
+            cv["alpha_spread_cmd"].setData(dphc[:, 0], alpha_spread_cmd)
 
         if dth.shape[0]:
             for i in range(2):
                 cv[f"beta_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
+            beta_spread = 0.5 * (dth[:, 1] - dth[:, 2])
+            cv["beta_spread"].setData(dth[:, 0], beta_spread)
 
         if dthc.shape[0]:
             for i in range(2):
                 cv[f"betac_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
+            beta_spread_cmd = 0.5 * (dthc[:, 1] - dthc[:, 2])
+            cv["beta_spread_cmd"].setData(dthc[:, 0], beta_spread_cmd)
+
+        self._update_xy_vectors(dph, dth, self._xy_actual)
+        self._update_xy_vectors(dphc, dthc, self._xy_cmd)
+        self._update_nullspace_label(dd, dw, dph, dth, dphc, dthc)
 
         self._update_max_label()
 
         if self._plots_state:
             self._plots_state[0].setXRange(tl, tn, padding=0)
+
+        if self._plots_nullspace:
+            self._plots_nullspace[0].setXRange(tl, tn, padding=0)
+
+        if self._plots_disturbance:
+            self._plots_disturbance[0].setXRange(tl, tn, padding=0)
 
         if self._plots_act:
             self._plots_act[0].setXRange(tl, tn, padding=0)

@@ -13,6 +13,7 @@
       <freejoint name="root"/>
       <inertial pos="0 0 0" quat="1 0 0 0" mass="3.12" diaginertia="0.055 0.055 0.090"/>
       <geom name="body_geom" type="mesh" mesh="body_mesh" rgba="0.62 0.64 0.66 1" contype="0" conaffinity="0"/>
+      <geom name="body_collision" type="ellipsoid" size="0.22 0.22 0.06" rgba="0 0 0 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001"/>
       <geom name="landing_foot_fl" type="sphere" pos="0.10 0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
       <geom name="landing_foot_fr" type="sphere" pos="0.10 -0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
       <geom name="landing_foot_bl" type="sphere" pos="-0.10 0.07 -0.055" size="0.012" rgba="0.02 0.02 0.02 0" contype="2" conaffinity="1" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
@@ -21,6 +22,14 @@
       <camera name="front_camera" pos="0.195 0 0.02" xyaxes="0 -1 0 0 0 1" fovy="70"/>
       <geom name="front_camera_body" type="box" pos="0.195 0 0.02" size="0.015 0.025 0.012" rgba="0.02 0.02 0.02 1" contype="0" conaffinity="0"/>
       <geom name="front_camera_lens" type="cylinder" pos="0.224 0 0.02" size="0.009 0.004" quat="0.7071068 0 0.7071068 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
+
+      <!-- Each rangefinder measures along the local +Z axis of its site. -->
+      <site name="lidar_front" pos="0.24 0 0" quat="0.7071068 0 0.7071068 0" size="0.008" rgba="0.1 0.8 1 0.9"/>
+      <site name="lidar_back" pos="-0.24 0 0" quat="0.7071068 0 -0.7071068 0" size="0.008" rgba="0.1 0.8 1 0.9"/>
+      <site name="lidar_left" pos="0 0.24 0" quat="0.7071068 -0.7071068 0 0" size="0.008" rgba="0.1 0.8 1 0.9"/>
+      <site name="lidar_right" pos="0 -0.24 0" quat="0.7071068 0.7071068 0 0" size="0.008" rgba="0.1 0.8 1 0.9"/>
+      <site name="lidar_up" pos="0 0 0.08" size="0.008" rgba="0.1 0.8 1 0.9"/>
+      <site name="lidar_down" pos="0 0 -0.07" quat="0 1 0 0" size="0.008" rgba="0.1 0.8 1 0.9"/>
 
       <body name="arm1" pos="0.175 0 0" euler="3.141592653589793 0 0">
         <joint name="joint_beta1" type="hinge" axis="0 1 0" pos="0 0 0" range="-3.141592653589793 3.141592653589793" limited="true" damping="0.5" armature="0.03"/>
@@ -105,6 +114,13 @@
     <jointpos name="encoder_alpha2" joint="joint_alpha2"/>
     <jointpos name="encoder_alpha3" joint="joint_alpha3"/>
     <jointpos name="encoder_alpha4" joint="joint_alpha4"/>
+
+    <rangefinder name="lidar_front_range" site="lidar_front" cutoff="3.0"/>
+    <rangefinder name="lidar_back_range" site="lidar_back" cutoff="3.0"/>
+    <rangefinder name="lidar_left_range" site="lidar_left" cutoff="3.0"/>
+    <rangefinder name="lidar_right_range" site="lidar_right" cutoff="3.0"/>
+    <rangefinder name="lidar_up_range" site="lidar_up" cutoff="3.0"/>
+    <rangefinder name="lidar_down_range" site="lidar_down" cutoff="3.0"/>
   </sensor>
 
 </mujoco>
