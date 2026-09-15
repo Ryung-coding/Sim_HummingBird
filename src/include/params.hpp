@@ -61,11 +61,11 @@ static constexpr std::array<double, 10> ada_W_inv_diag = {1.0, 1.0, 1.0, 1.0, 1.
 static constexpr std::array<double, 10> ada_q_dot_max = {3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 80.0, 80.0, 80.0, 80.0};
 
 // Nullspace target gains [1/s]
-static constexpr double ada_null_alpha_gain = 1.0;
-static constexpr double ada_null_beta_gain = 1.0;
+static constexpr double ada_null_alpha_gain = 30.0;
+static constexpr double ada_null_beta_gain = 30.0;
 static constexpr double ada_null_f_gain = 1.0;
-static constexpr double ada_rms_alpha_gain = 0.1;
-static constexpr double ada_rms_beta_gain = 0.1;
+static constexpr double ada_rms_alpha_gain = 0.0;
+static constexpr double ada_rms_beta_gain = 0.0;
 static constexpr double ada_alpha_soft_margin = 5.0 * M_PI / 180.0;
 static constexpr double ada_beta_soft_margin = 5.0 * M_PI / 180.0;
 static constexpr double ada_limit_alpha_gain = 10.0;

@@ -31,12 +31,13 @@ C_O = "#f58231"
 C3 = [C_R, C_G, C_B]
 C4 = [C_R, C_G, C_B, C_O]
 
-ROTOR_XY = np.array([
+ROTOR_BODY_XY = np.array([
     [0.175, 0.175],
     [-0.175, 0.175],
     [-0.175, -0.175],
     [0.175, -0.175]
 ], dtype=float)
+ROTOR_PLOT_YX = ROTOR_BODY_XY[:, [1, 0]]
 BETA_INDEX = np.array([0, 1, 1, 0], dtype=int)
 TILT_VECTOR_SCALE = 0.35
 TILT_ARROW_HEAD = 0.035
@@ -358,18 +359,18 @@ class Win(QtWidgets.QMainWindow):
             self.nullspace_glw,
             0,
             0,
-            "Rotor tilt direction in body XY plane",
-            "body y [m]",
+            "Rotor tilt direction in body XY plane (x up, y right)",
+            "body x [m]",
             rowspan=3
         )
-        p_xy.setLabel("bottom", "body x [m]")
+        p_xy.setLabel("bottom", "body y [m]")
         p_xy.setAspectLocked(True)
         p_xy.setXRange(-0.58, 0.58, padding=0)
         p_xy.setYRange(-0.58, 0.58, padding=0)
         p_xy.addLine(x=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
         p_xy.addLine(y=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
 
-        for i, (origin, color) in enumerate(zip(ROTOR_XY, C4)):
+        for i, (origin, color) in enumerate(zip(ROTOR_PLOT_YX, C4)):
             p_xy.plot(
                 [0.0, origin[0]],
                 [0.0, origin[1]],
@@ -393,18 +394,18 @@ class Win(QtWidgets.QMainWindow):
             [0.0, 0.0],
             pen=pg.mkPen("#555555", width=3)
         )
-        x_label = pg.TextItem("+x", color="#333333", anchor=(0.0, 0.5))
-        x_label.setPos(0.11, 0.0)
-        p_xy.addItem(x_label)
+        y_label = pg.TextItem("+y", color="#333333", anchor=(0.0, 0.5))
+        y_label.setPos(0.11, 0.0)
+        p_xy.addItem(y_label)
 
         p_xy.plot(
             [0.0, 0.0],
             [0.0, 0.10],
             pen=pg.mkPen("#555555", width=3)
         )
-        y_label = pg.TextItem("+y", color="#333333", anchor=(0.5, 1.0))
-        y_label.setPos(0.0, 0.11)
-        p_xy.addItem(y_label)
+        x_label = pg.TextItem("+x", color="#333333", anchor=(0.5, 1.0))
+        x_label.setPos(0.0, 0.11)
+        p_xy.addItem(x_label)
 
         self._xy_actual = []
         self._xy_cmd = []
@@ -627,7 +628,9 @@ class Win(QtWidgets.QMainWindow):
 
         vectors = tilt_xy_components(alpha_data[-1, 1:5], beta_data[-1, 1:3])
         for i, curve in enumerate(curves):
-            x, y = vector_polyline(ROTOR_XY[i], vectors[i])
+            origin_yx = ROTOR_PLOT_YX[i]
+            vector_yx = vectors[i, [1, 0]]
+            x, y = vector_polyline(origin_yx, vector_yx)
             curve.setData(x, y, connect="finite")
 
     def _update_nullspace_label(self, dd, dw, dph, dth, dphc, dthc):
@@ -662,7 +665,8 @@ class Win(QtWidgets.QMainWindow):
             f"[{beta_cmd[0]:.1f}, {beta_cmd[1]:.1f}]<br><br>"
             "<b>Mapping</b>: d_y -> α1,2(+), α3,4(-); d_x -> β1(+), β2(-)<br>"
             "β1: R1,R4; β2: R2,R3<br>"
-            "XY arrows show e_xy = [-sin(β)cos(α), sin(α)] × 0.35 m.<br>"
+            "Plot axes: x points up, y points right.<br>"
+            "Arrows use e_xy = [-sin(β)cos(α), sin(α)] × 0.35 m.<br>"
             "Solid: measured, dashed: commanded"
             "</div>"
         )

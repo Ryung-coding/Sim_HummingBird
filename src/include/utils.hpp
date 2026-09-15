@@ -534,6 +534,83 @@ inline TargetCMD throughWallPath(double t)
   return cmd;
 }
 
+inline TargetCMD circularWallPath(double t)
+{
+  static constexpr double R = 2.5;
+  static constexpr double Z = 1.2;
+
+  static constexpr double ORIENT_SEC = 2.0;
+  static constexpr double RAMP_SEC = 3.0;
+  static constexpr double LAP_SEC = 14.0;
+
+  static constexpr double BANK_RAD = 35.0 * M_PI / 180.0;
+  static constexpr double OMEGA = 2.0 * M_PI / LAP_SEC;
+
+  const auto smooth = [](double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
+  };
+
+  TargetCMD cmd;
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  if (t < ORIENT_SEC) {
+    const double s = smooth(t / ORIENT_SEC);
+
+    cmd.x = 0.0;
+    cmd.y = 0.0;
+    cmd.z = Z;
+
+    cmd.roll = 0.0;
+    cmd.pitch = 0.0;
+    cmd.yaw = 0.5 * M_PI * s;
+
+    return cmd;
+  }
+
+  t -= ORIENT_SEC;
+
+  double phase = 0.0;
+  double bank = BANK_RAD;
+
+  if (t < RAMP_SEC) {
+    const double u = std::clamp(t / RAMP_SEC, 0.0, 1.0);
+    const double s = smooth(u);
+
+    const double phase_integral =
+        2.5 * std::pow(u, 4)
+      - 3.0 * std::pow(u, 5)
+      +       std::pow(u, 6);
+
+    phase = OMEGA * RAMP_SEC * phase_integral;
+    bank = BANK_RAD * s;
+  }
+  else {
+    phase = OMEGA * (t - 0.5 * RAMP_SEC);
+    bank = BANK_RAD;
+  }
+
+  cmd.x = R * (1.0 - std::cos(phase));
+  cmd.y = R * std::sin(phase);
+  cmd.z = Z;
+
+  // Tangential heading
+  const double yaw = 0.5 * M_PI - phase;
+
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = std::atan2(std::sin(yaw), std::cos(yaw));
+
+  return cmd;
+}
+
 // Control Allocation utils ===========================================
 inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
 {
@@ -692,11 +769,11 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   Eigen::Vector2d beta_target;
 
   // RMS-dependent symmetric tilt spreading
-  // Fx -> beta1(+), beta2(-)
+  // Fx -> beta1(-), beta2(+)
   // Fy -> alpha1,2(+), alpha3,4(-)
   alpha_target << alpha_ref + delta_alpha, alpha_ref + delta_alpha,
                   alpha_ref - delta_alpha, alpha_ref - delta_alpha;
-  beta_target << beta_ref + delta_beta, beta_ref - delta_beta;
+  beta_target << beta_ref - delta_beta, beta_ref + delta_beta;
 
   for (int i = 0; i < 4; ++i) 
   {
