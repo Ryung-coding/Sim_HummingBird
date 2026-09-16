@@ -743,64 +743,24 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   const Vector6d W_dot_des = Kj * (W_des - W_now);
 
   // (5) J_dagger = W_q^{-1} J^T (J W_q^{-1} J^T)^{-1}
+  const double disturbance_rms = d.maxCoeff();
+  const double weight_ratio = std::clamp(
+      (disturbance_rms - params::ada_weight_rms_active)
+      / (params::ada_weight_rms_full - params::ada_weight_rms_active),
+      0.0,
+      1.0);
+  const double weight_blend = weight_ratio * weight_ratio * (3.0 - 2.0 * weight_ratio);
+  const double f_inverse_weight = params::ada_W_inv_diag[6] + weight_blend * (params::ada_W_inv_f_disturbed - params::ada_W_inv_diag[6]);
+
   Matrix1010d W_q_inv = Matrix1010d::Zero();
-  for (int i = 0; i < 10; ++i) W_q_inv(i, i) = params::ada_W_inv_diag[i];
+  for (int i = 0; i < 6; ++i) W_q_inv(i, i) = params::ada_W_inv_diag[i];
+  for (int i = 6; i < 10; ++i) W_q_inv(i, i) = f_inverse_weight;
 
   const Matrix66d JWJ = J * W_q_inv * J.transpose();
   const Matrix66d JWJ_inv = JWJ.completeOrthogonalDecomposition().solve(Matrix66d::Identity());
   const Matrix106d J_dagger = W_q_inv * J.transpose() * JWJ_inv;
 
-  // (4) q_dot = J_dagger W_dot_des + (I - J_dagger J) q_dot_star
-  // const Vector10d q_dot_star = Vector10d::Zero();
-  Vector10d q_dot_star = Vector10d::Zero();
-
-  const Eigen::Vector3d thrust_dir_ref = rpyToRot(att_cmd).transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
-  const double alpha_ref = std::clamp(std::asin(std::clamp(thrust_dir_ref(1), -1.0, 1.0)), -params::alpha_limit_rad, params::alpha_limit_rad);
-  const double beta_ref = std::atan2(-thrust_dir_ref(0), -thrust_dir_ref(2));
-  const double f_ref = 0.25 * force_cmd.norm();
-  const double RMS_Fx = d(0);
-  const double RMS_Fy = d(1);
-  const double delta_alpha = params::ada_rms_alpha_gain * RMS_Fy * RMS_Fy;
-  const double delta_beta = params::ada_rms_beta_gain * RMS_Fx * RMS_Fx;
-  const double alpha_soft_limit = params::alpha_limit_rad - params::ada_alpha_soft_margin;
-  const double beta_soft_limit = params::beta_limit_rad - params::ada_beta_soft_margin;
-
-  Eigen::Vector4d alpha_target;
-  Eigen::Vector2d beta_target;
-
-  // RMS-dependent symmetric tilt spreading
-  // Fx -> beta1(-), beta2(+)
-  // Fy -> alpha1,2(+), alpha3,4(-)
-  alpha_target << alpha_ref + delta_alpha, alpha_ref + delta_alpha,
-                  alpha_ref - delta_alpha, alpha_ref - delta_alpha;
-  beta_target << beta_ref - delta_beta, beta_ref + delta_beta;
-
-  for (int i = 0; i < 4; ++i) 
-  {
-    // Tracking cost pulls tilt toward att_cmd + RMS spreading target.
-    q_dot_star(i) = params::ada_null_alpha_gain * (alpha_target(i) - q(i));
-
-    // Soft-limit penalty is inactive inside the safe region.
-    // Outside the soft limit, it strongly pushes the servo angle back inward.
-    if (std::abs(q(i)) > alpha_soft_limit) {
-      const double limit_error = std::abs(q(i)) - alpha_soft_limit;
-      q_dot_star(i) -= params::ada_limit_alpha_gain * std::copysign(limit_error, q(i));
-    }
-
-    q_dot_star(6 + i) = params::ada_null_f_gain * (f_ref - q(6 + i));
-  }
-  for (int i = 0; i < 2; ++i) 
-  {
-    q_dot_star(4 + i) = params::ada_null_beta_gain * (beta_target(i) - q(4 + i));
-
-    if (std::abs(q(4 + i)) > beta_soft_limit) {
-      const double limit_error = std::abs(q(4 + i)) - beta_soft_limit;
-      q_dot_star(4 + i) -= params::ada_limit_beta_gain * std::copysign(limit_error, q(4 + i));
-    }
-  }
-
-  const Matrix1010d nullspace = Matrix1010d::Identity() - J_dagger * J;
-  Vector10d q_dot = J_dagger * W_dot_des + nullspace * q_dot_star;
+  Vector10d q_dot = J_dagger * W_dot_des;
 
   // (13) sat(q_dot) = k_s q_dot
   double k_s = 1.0;
@@ -813,12 +773,6 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   q_cmd_prev.segment<2>(4) = previous_cmd.beta;
   const Vector10d q_cmd = q_cmd_prev + std::max(dt, 0.0) * q_dot;
 
-
-  // Position servos realize angle rates through a first-order inverse; direct thrust integrates f_dot.
-  // Vector10d q_cmd = q;
-  // q_cmd.segment<4>(0) += params::ada_tau_alpha * q_dot.segment<4>(0);
-  // q_cmd.segment<2>(4) += params::ada_tau_beta * q_dot.segment<2>(4);
-  // q_cmd.segment<4>(6) += std::max(dt, 0.0) * q_dot.segment<4>(6);
 
   AllocationOutput out;
   for (int i = 0; i < 4; ++i) 

@@ -9,7 +9,7 @@
   </asset>
 
   <worldbody>
-    <body name="body" pos="0 0 1.275">
+    <body name="body" pos="0 0 0.075">
       <freejoint name="root"/>
       <inertial pos="0 0 0" quat="1 0 0 0" mass="3.12" diaginertia="0.055 0.055 0.090"/>
       <geom name="body_geom" type="mesh" mesh="body_mesh" rgba="0.62 0.64 0.66 1" contype="0" conaffinity="0"/>

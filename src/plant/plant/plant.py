@@ -17,27 +17,34 @@ import mujoco.viewer
 
 from multirotor_interfaces.msg import Input, MultirotorState
 
-
+# control rate and physics rate
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
 
-USE_NOISE = True
-
+# Sensor noise standard deviations
+USE_NOISE = False
 SIG_POS = 0.005
 SIG_VEL = 0.03
 SIG_GYRO = 0.01
 SIG_ACC = 0.10
 SIG_ENCODER = 0.002
 
+# Model dimensions
 N_THRUST = 4
 N_BETA = 2
 N_ALPHA = 4
 N_CTRL = N_THRUST + 4 + N_ALPHA
 
+# Visualization parameters
 USE_FIXED_CAMERA = False
+SHOW_THRUST_ARROWS = True
+USE_LIDAR = False
+SHOW_LIDAR_RAYS = False
+USE_WIND = False
+USE_RANDOM_DISTURBANCE = True
+
 VIEW_CAMERA_NAME = "front_camera"
 
-SHOW_THRUST_ARROWS = True
 THRUST_ARROW_SCALE = 0.025
 THRUST_ARROW_MIN_LEN = 0.15
 THRUST_ARROW_MAX_LEN = 1.20
@@ -45,7 +52,6 @@ THRUST_ARROW_WIDTH = 0.008
 THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
 
 LIDAR_MAX_RANGE = 3.0
-SHOW_LIDAR_RAYS = True
 LIDAR_RAY_WIDTH = 0.004
 LIDAR_HIT_RGBA = np.array([0.05, 0.80, 1.00, 0.90], dtype=np.float32)
 LIDAR_NO_HIT_RGBA = np.array([0.35, 0.55, 0.60, 0.20], dtype=np.float32)
@@ -61,10 +67,13 @@ AIRFLOW_CP_OFFSET_BODY = np.array([0.0, 0.0, 0.01], dtype=float)
 AIRFLOW_FORCE_LIMIT = 6.0
 AIRFLOW_TORQUE_LIMIT = 0.15
 
+RANDOM_DISTURBANCE_DIRECTION_ZDOWN = np.array([0.0, 1.0, 0.0], dtype=float)
+RANDOM_DISTURBANCE_FORCE_MAX_N = 10.0
+RANDOM_DISTURBANCE_TIME_CONSTANT = 0.3
+
 
 def to_zdown(v):
     return np.array([v[0], -v[1], -v[2]], dtype=float)
-
 
 def quat_to_rotmat(q):
     w, x, y, z = q
@@ -75,14 +84,12 @@ def quat_to_rotmat(q):
         [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)]
     ], dtype=float)
 
-
 def rotmat_to_rpy(R):
     pitch = math.asin(max(-1.0, min(1.0, -R[2, 0])))
     roll = math.atan2(R[2, 1], R[2, 2])
     yaw = math.atan2(R[1, 0], R[0, 0])
 
     return np.array([roll, pitch, yaw], dtype=float)
-
 
 def rotmat_to_quat(R):
     tr = R[0, 0] + R[1, 1] + R[2, 2]
@@ -120,20 +127,17 @@ def rotmat_to_quat(R):
 
     return q / n
 
-
 def imu_quat_to_zdown_rot(q_imu):
     S = np.diag([1.0, -1.0, -1.0])
     R_imu_mj = quat_to_rotmat(q_imu)
 
     return S @ R_imu_mj
 
-
 def add_noise(x, sigma):
     if not USE_NOISE or sigma <= 0.0:
         return x
 
     return x + np.random.normal(0.0, sigma, size=x.shape)
-
 
 class PlantRosNode(Node):
     def __init__(self):
@@ -176,18 +180,29 @@ class PlantRosNode(Node):
         if self.bid_body < 0:
             raise RuntimeError("body not found: body")
 
-        lidar_names = ("front", "back", "left", "right", "up", "down")
-        self.sid_lidar = [
-            self.sensor_id(f"lidar_{name}_range") for name in lidar_names
-        ]
-        self.lidar_site_ids = [
-            self.site_id(f"lidar_{name}") for name in lidar_names
-        ]
+        self.sid_lidar = []
+        self.lidar_site_ids = []
+        if USE_LIDAR:
+            lidar_names = ("front", "back", "left", "right", "up", "down")
+            self.sid_lidar = [
+                self.sensor_id(f"lidar_{name}_range") for name in lidar_names
+            ]
+            self.lidar_site_ids = [
+                self.site_id(f"lidar_{name}") for name in lidar_names
+            ]
 
         self.s_adr = self.model.sensor_adr
         self.s_dim = self.model.sensor_dim
-        self.lidar_ranges = self.read_lidar_ranges()
+        self.lidar_ranges = np.full(6, -1.0, dtype=float)
         self.airflow_state = np.zeros(3, dtype=float)
+        self.random_disturbance_state = 0.0
+
+        direction_norm = np.linalg.norm(RANDOM_DISTURBANCE_DIRECTION_ZDOWN)
+        if USE_RANDOM_DISTURBANCE and direction_norm <= 1.0e-9:
+            raise ValueError("RANDOM_DISTURBANCE_DIRECTION_ZDOWN must be non-zero")
+        self.random_disturbance_direction_mj = to_zdown(
+            RANDOM_DISTURBANCE_DIRECTION_ZDOWN / max(direction_norm, 1.0e-9)
+        )
 
         self.ctrl_recv = np.zeros(N_CTRL, dtype=float)
         self.ctrl = np.zeros(N_CTRL, dtype=float)
@@ -234,6 +249,9 @@ class PlantRosNode(Node):
         return np.array(self.data.sensordata[adr:adr + dim], dtype=float)
 
     def read_lidar_ranges(self):
+        if not USE_LIDAR:
+            return np.full(6, -1.0, dtype=float)
+
         lidar = np.array([
             self.sensing_state(sid)[0] for sid in self.sid_lidar
         ], dtype=float)
@@ -241,7 +259,8 @@ class PlantRosNode(Node):
         return lidar
 
     def apply_wall_airflow(self):
-        self.lidar_ranges = self.read_lidar_ranges()
+        if not USE_WIND or not USE_LIDAR:
+            return
 
         decay = math.exp(
             -1.0 / (PHYSICS_HZ * AIRFLOW_TIME_CONSTANT)
@@ -296,8 +315,28 @@ class PlantRosNode(Node):
         if torque_norm > AIRFLOW_TORQUE_LIMIT:
             airflow_torque *= AIRFLOW_TORQUE_LIMIT / torque_norm
 
-        self.data.xfrc_applied[self.bid_body, :3] = airflow_force
-        self.data.xfrc_applied[self.bid_body, 3:] = airflow_torque
+        self.data.xfrc_applied[self.bid_body, :3] += airflow_force
+        self.data.xfrc_applied[self.bid_body, 3:] += airflow_torque
+
+    def apply_random_disturbance(self):
+        if not USE_RANDOM_DISTURBANCE:
+            return
+
+        decay = math.exp(
+            -1.0 / (PHYSICS_HZ * RANDOM_DISTURBANCE_TIME_CONSTANT)
+        )
+        self.random_disturbance_state = (
+            decay * self.random_disturbance_state
+            + math.sqrt(1.0 - decay * decay) * np.random.normal()
+        )
+
+        random_scale = abs(math.tanh(self.random_disturbance_state))
+        disturbance_force = (
+            RANDOM_DISTURBANCE_FORCE_MAX_N
+            * random_scale
+            * self.random_disturbance_direction_mj
+        )
+        self.data.xfrc_applied[self.bid_body, :3] += disturbance_force
 
     def input_callback(self, msg):
         f = np.asarray(msg.f, dtype=float)
@@ -399,7 +438,10 @@ class PlantRosNode(Node):
                 self.apply_control()
 
                 while now >= next_step:
+                    self.data.xfrc_applied[self.bid_body, :] = 0.0
+                    self.lidar_ranges = self.read_lidar_ranges()
                     self.apply_wall_airflow()
+                    self.apply_random_disturbance()
                     mujoco.mj_step(self.model, self.data)
                     next_step += dt_step
 
@@ -474,7 +516,7 @@ class PlantRosNode(Node):
             scn.ngeom += 1
 
     def update_lidar_rays(self, viewer):
-        if not SHOW_LIDAR_RAYS or not hasattr(viewer, "user_scn"):
+        if not USE_LIDAR or not SHOW_LIDAR_RAYS or not hasattr(viewer, "user_scn"):
             return
 
         scn = viewer.user_scn

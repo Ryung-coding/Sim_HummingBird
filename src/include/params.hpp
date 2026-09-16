@@ -52,28 +52,18 @@ static constexpr double virtual_lambda = 1.0e-4;
 
 // Augmented Differential Allocation ----------------------------------
 // (7), diag [Mx My Mz Fx Fy Fz]
-static constexpr std::array<double, 6> ada_kj_diag = {60.0, 60.0, 60.0, 24.0, 24.0, 24.0};
+static constexpr std::array<double, 6> ada_kj_diag = {60.0, 60.0, 60.0, 25.0, 25.0, 25.0};
 
 // (5), diag [alpha1 alpha2 alpha3 alpha4 beta1 beta2 f1 f2 f3 f4]
 static constexpr std::array<double, 10> ada_W_inv_diag = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3200.0, 3200.0, 3200.0, 3200.0};
 
 // (13), order [alpha_dot1 alpha_dot2 alpha_dot3 alpha_dot4 beta_dot1 beta_dot2 f_dot1 f_dot2 f_dot3 f_dot4]
-static constexpr std::array<double, 10> ada_q_dot_max = {3.0, 3.0, 3.0, 3.0, 3.0, 3.0, 80.0, 80.0, 80.0, 80.0};
+static constexpr std::array<double, 10> ada_q_dot_max = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 500.0, 500.0, 500.0, 500.0};
 
-// Nullspace target gains [1/s]
-static constexpr double ada_null_alpha_gain = 30.0;
-static constexpr double ada_null_beta_gain = 30.0;
-static constexpr double ada_null_f_gain = 1.0;
-static constexpr double ada_rms_alpha_gain = 0.0;
-static constexpr double ada_rms_beta_gain = 0.0;
-static constexpr double ada_alpha_soft_margin = 5.0 * M_PI / 180.0;
-static constexpr double ada_beta_soft_margin = 5.0 * M_PI / 180.0;
-static constexpr double ada_limit_alpha_gain = 10.0;
-static constexpr double ada_limit_beta_gain = 10.0;
-
-// First-order position-servo inverse [s]
-static constexpr double ada_tau_alpha = 0.10;
-static constexpr double ada_tau_beta = 0.08;
+// Disturbance-dependent actuator weighting
+static constexpr double ada_weight_rms_active = 0.0;
+static constexpr double ada_weight_rms_full = 0.05;
+static constexpr double ada_W_inv_f_disturbed = 10000.0;
 
 static constexpr double check_force_tol = 1.00;
 static constexpr double check_moment_tol = 2.00;
