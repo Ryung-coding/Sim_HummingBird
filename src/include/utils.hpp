@@ -4,8 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <sstream>
-#include <string>
 #include <params.hpp>
 
 namespace utils {
@@ -52,13 +50,9 @@ struct AllocationOutput {
   Eigen::Vector4d alpha = Eigen::Vector4d::Zero();
 };
 
-struct AllocationCheck {
-  bool problem = false;
-  Eigen::Vector3d moment_actual = Eigen::Vector3d::Zero();
-  Eigen::Vector3d force_actual = Eigen::Vector3d::Zero();
-  Eigen::Vector3d moment_error = Eigen::Vector3d::Zero();
-  Eigen::Vector3d force_error = Eigen::Vector3d::Zero();
-  std::string message;
+struct HexaAllocationOutput {
+  Eigen::Matrix<double, 6, 1> f = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> alpha = Eigen::Matrix<double, 6, 1>::Zero();
 };
 
 
@@ -188,10 +182,10 @@ inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
 // Path utils =========================================================
 inline TargetCMD posPath(double t)
 {
-  static constexpr double HOVER_SEC = 0.5;
-  static constexpr double SEG_SEC = 1.0;
-  static constexpr double XY = 0.5;
-  static constexpr double Z = 0.5;
+  static constexpr double HOVER_SEC = 3.0;
+  static constexpr double SEG_SEC = 5.0;
+  static constexpr double XY = 0.0;
+  static constexpr double Z = 1.0;
 
   TargetCMD cmd;
 
@@ -543,7 +537,6 @@ inline TargetCMD circularWallPath(double t)
   static constexpr double RAMP_SEC = 3.0;
   static constexpr double LAP_SEC = 14.0;
 
-  static constexpr double BANK_RAD = 35.0 * M_PI / 180.0;
   static constexpr double OMEGA = 2.0 * M_PI / LAP_SEC;
 
   const auto smooth = [](double a) {
@@ -578,23 +571,17 @@ inline TargetCMD circularWallPath(double t)
   t -= ORIENT_SEC;
 
   double phase = 0.0;
-  double bank = BANK_RAD;
-
   if (t < RAMP_SEC) {
     const double u = std::clamp(t / RAMP_SEC, 0.0, 1.0);
-    const double s = smooth(u);
-
     const double phase_integral =
         2.5 * std::pow(u, 4)
       - 3.0 * std::pow(u, 5)
       +       std::pow(u, 6);
 
     phase = OMEGA * RAMP_SEC * phase_integral;
-    bank = BANK_RAD * s;
   }
   else {
     phase = OMEGA * (t - 0.5 * RAMP_SEC);
-    bank = BANK_RAD;
   }
 
   cmd.x = R * (1.0 - std::cos(phase));
@@ -614,25 +601,24 @@ inline TargetCMD circularWallPath(double t)
 // Control Allocation utils ===========================================
 inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
 {
-  const double force_norm = std::max(force_cmd.norm(), params::f_min);
-
+  const double force_norm = std::max(force_cmd.norm(), 1.0e-3);
   Eigen::Vector3d force_dir;
-  if (force_norm > params::f_min) force_dir = force_cmd / force_norm;
+  if (force_norm > 1.0e-3) force_dir = force_cmd / force_norm;
   else force_dir << 0.0, 0.0, -1.0;
 
   double beta_des = std::atan2(-force_dir(0), -force_dir(2));
   double alpha_des = std::asin(std::clamp(force_dir(1), -1.0, 1.0));
 
-  beta_des = std::clamp(beta_des, -params::beta_limit_rad, params::beta_limit_rad);
-  alpha_des = std::clamp(alpha_des, -params::alpha_limit_rad, params::alpha_limit_rad);
+  beta_des = std::clamp(beta_des, -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
+  alpha_des = std::clamp(alpha_des, -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
 
   Eigen::Vector3d e_cmd;
   e_cmd << -std::sin(beta_des) * std::cos(alpha_des),
             std::sin(alpha_des),
            -std::cos(beta_des) * std::cos(alpha_des);
 
-  const double L = params::L;
-  const double zeta  = params::zeta;
+  const double L = params::HB_L;
+  const double zeta  = params::HB_ZETA;
 
   Eigen::Matrix4d B;
   Eigen::Vector4d Wrench;
@@ -649,12 +635,12 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
                                                 1.0,                                                 1.0,                                                   1.0,                                                1.0;
 
 
-  const Eigen::Matrix4d H = B * B.transpose() + params::virtual_lambda * params::virtual_lambda * Eigen::Matrix4d::Identity();
+  const Eigen::Matrix4d H = B * B.transpose() + params::HB_VIRTUAL_LAMBDA * params::HB_VIRTUAL_LAMBDA * Eigen::Matrix4d::Identity();
   const Eigen::Vector4d thrust_raw = B.transpose() * H.ldlt().solve(Wrench);
 
   AllocationOutput out;
 
-  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(thrust_raw(i), params::f_cmd_min, params::f_cmd_max);
+  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(thrust_raw(i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
 
   out.beta << beta_des, beta_des;
   out.alpha.setConstant(alpha_des);
@@ -662,7 +648,7 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Matrix<double, 6, 1>& d, const Eigen::Vector3d& att_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
+inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector2d& beta_ref, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, [[maybe_unused]] double dt)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
   using Vector10d = Eigen::Matrix<double, 10, 1>;
@@ -674,11 +660,11 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   static bool initialized = false;
   static AllocationOutput previous_cmd;
 
-  if (!initialized) 
+  if (!initialized)
   {
     previous_cmd.alpha = alpha_measured;
     previous_cmd.beta = beta_measured;
-    previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::f_cmd_min, params::f_cmd_max));
+    previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX));
     initialized = true;
   }
 
@@ -688,165 +674,226 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   q.segment<2>(4) = servo_read ? beta_measured : previous_cmd.beta;
   q.segment<4>(6) = previous_cmd.f;
 
-  constexpr std::array<int, 4> beta_index = {0, 1, 1, 0};
-  constexpr std::array<double, 4> x_sign = {1.0, -1.0, -1.0, 1.0};
-  constexpr std::array<double, 4> y_sign = {1.0, 1.0, -1.0, -1.0};
-  constexpr std::array<double, 4> reaction_sign = {1.0, -1.0, 1.0, -1.0};
+  const double alpha1 = q(0);
+  const double alpha2 = q(1);
+  const double alpha3 = q(2);
+  const double alpha4 = q(3);
+  const double beta1 = q(4);
+  const double beta2 = q(5);
+  const double f1 = q(6);
+  const double f2 = q(7);
+  const double f3 = q(8);
+  const double f4 = q(9);
 
-  // W(q) = sum_i f_i [r_i x e_i + sigma_i zeta e_i; e_i]
-  Vector6d W_now = Vector6d::Zero();
+  const Eigen::Vector3d r1(params::HB_L, params::HB_L, 0.0);
+  const Eigen::Vector3d r2(-params::HB_L, params::HB_L, 0.0);
+  const Eigen::Vector3d r3(-params::HB_L, -params::HB_L, 0.0);
+  const Eigen::Vector3d r4(params::HB_L, -params::HB_L, 0.0);
+
+  const Eigen::Vector3d e1(-std::sin(beta1) * std::cos(alpha1), std::sin(alpha1), -std::cos(beta1) * std::cos(alpha1));
+  const Eigen::Vector3d e2(-std::sin(beta2) * std::cos(alpha2), std::sin(alpha2), -std::cos(beta2) * std::cos(alpha2));
+  const Eigen::Vector3d e3(-std::sin(beta2) * std::cos(alpha3), std::sin(alpha3), -std::cos(beta2) * std::cos(alpha3));
+  const Eigen::Vector3d e4(-std::sin(beta1) * std::cos(alpha4), std::sin(alpha4), -std::cos(beta1) * std::cos(alpha4));
+
+  const Eigen::Vector3d de_dalpha1(std::sin(beta1) * std::sin(alpha1), std::cos(alpha1), std::cos(beta1) * std::sin(alpha1));
+  const Eigen::Vector3d de_dalpha2(std::sin(beta2) * std::sin(alpha2), std::cos(alpha2), std::cos(beta2) * std::sin(alpha2));
+  const Eigen::Vector3d de_dalpha3(std::sin(beta2) * std::sin(alpha3), std::cos(alpha3), std::cos(beta2) * std::sin(alpha3));
+  const Eigen::Vector3d de_dalpha4(std::sin(beta1) * std::sin(alpha4), std::cos(alpha4), std::cos(beta1) * std::sin(alpha4));
+
+  const Eigen::Vector3d de_dbeta1(-std::cos(beta1) * std::cos(alpha1), 0.0, std::sin(beta1) * std::cos(alpha1));
+  const Eigen::Vector3d de_dbeta2(-std::cos(beta2) * std::cos(alpha2), 0.0, std::sin(beta2) * std::cos(alpha2));
+  const Eigen::Vector3d de_dbeta3(-std::cos(beta2) * std::cos(alpha3), 0.0, std::sin(beta2) * std::cos(alpha3));
+  const Eigen::Vector3d de_dbeta4(-std::cos(beta1) * std::cos(alpha4), 0.0, std::sin(beta1) * std::cos(alpha4));
+
+  const Eigen::Vector3d m_e1 = r1.cross(e1) + params::HB_ZETA * e1;
+  const Eigen::Vector3d m_e2 = r2.cross(e2) - params::HB_ZETA * e2;
+  const Eigen::Vector3d m_e3 = r3.cross(e3) + params::HB_ZETA * e3;
+  const Eigen::Vector3d m_e4 = r4.cross(e4) - params::HB_ZETA * e4;
+
+  const Eigen::Vector3d m_alpha1 = r1.cross(de_dalpha1) + params::HB_ZETA * de_dalpha1;
+  const Eigen::Vector3d m_alpha2 = r2.cross(de_dalpha2) - params::HB_ZETA * de_dalpha2;
+  const Eigen::Vector3d m_alpha3 = r3.cross(de_dalpha3) + params::HB_ZETA * de_dalpha3;
+  const Eigen::Vector3d m_alpha4 = r4.cross(de_dalpha4) - params::HB_ZETA * de_dalpha4;
+
+  const Eigen::Vector3d m_beta1 = r1.cross(de_dbeta1) + params::HB_ZETA * de_dbeta1;
+  const Eigen::Vector3d m_beta2 = r2.cross(de_dbeta2) - params::HB_ZETA * de_dbeta2;
+  const Eigen::Vector3d m_beta3 = r3.cross(de_dbeta3) + params::HB_ZETA * de_dbeta3;
+  const Eigen::Vector3d m_beta4 = r4.cross(de_dbeta4) - params::HB_ZETA * de_dbeta4;
+
+  Vector6d W_now;
+  W_now.head<3>() = f1 * m_e1 + f2 * m_e2 + f3 * m_e3 + f4 * m_e4;
+  W_now.tail<3>() = f1 * e1 + f2 * e2 + f3 * e3 + f4 * e4;
+
   Matrix610d J = Matrix610d::Zero();
+  J.col(0) << f1 * m_alpha1, f1 * de_dalpha1;
+  J.col(1) << f2 * m_alpha2, f2 * de_dalpha2;
+  J.col(2) << f3 * m_alpha3, f3 * de_dalpha3;
+  J.col(3) << f4 * m_alpha4, f4 * de_dalpha4;
+  J.col(4) << f1 * m_beta1 + f4 * m_beta4, f1 * de_dbeta1 + f4 * de_dbeta4;
+  J.col(5) << f2 * m_beta2 + f3 * m_beta3, f2 * de_dbeta2 + f3 * de_dbeta3;
+  J.col(6) << m_e1, e1;
+  J.col(7) << m_e2, e2;
+  J.col(8) << m_e3, e3;
+  J.col(9) << m_e4, e4;
 
-  for (int i = 0; i < 4; ++i) 
+  Vector6d W_des;
+  W_des << moment_cmd, force_cmd;
+
+  // (7) W_dot_des = Kj (W_des - W(q))
+  const Vector6d W_dot_des = params::HB_KJ * (W_des - W_now);
+
+  const Matrix66d JWJ = J * params::HB_W_INV * J.transpose();
+  const Matrix66d JWJ_inv = JWJ.completeOrthogonalDecomposition().solve(Matrix66d::Identity());
+  const Matrix106d J_pesudo = params::HB_W_INV * J.transpose() * JWJ_inv;
+
+  Vector10d q_dot_star = Vector10d::Zero();
+  for (int i = 0; i < 4; ++i) q_dot_star(i)  = params::HB_NULL_K[0] * (0.0                    - q(i));
+  for (int i = 4; i < 6; ++i) q_dot_star(i)  = params::HB_NULL_K[1] * (beta_ref(i-4)          - q(i));
+  for (int i = 6; i < 10; ++i) q_dot_star(i) = params::HB_NULL_K[2] * (force_cmd.norm() / 4.0 - q(i));
+
+  // q_dot = J^# W_dot_des + (I - J^# J) q_dot_star
+  Vector10d q_dot = J_pesudo * W_dot_des + (Matrix1010d::Identity() - J_pesudo * J) * q_dot_star;
+
+  // (13) sat(q_dot) = k_s q_dot
+  double k_s = 1.0;
+  for (int i = 0; i < 10; ++i) if (std::abs(q_dot(i)) > params::HB_QDOT_MAX[i]) k_s = std::min(k_s, params::HB_QDOT_MAX[i] / std::abs(q_dot(i)));
+  q_dot *= k_s;
+
+  // Simple integration: q_cmd,k+1 = q_cmd,k + dt q_dot,k
+  // Vector10d q_cmd_prev = q;
+  // q_cmd_prev.segment<4>(0) = previous_cmd.alpha;
+  // q_cmd_prev.segment<2>(4) = previous_cmd.beta;
+  // const Vector10d q_cmd = q_cmd_prev + std::max(dt, 0.0) * q_dot;
+
+  // (14) q_dot = K(q_cmd - q), q_cmd = q + K^-1 q_dot
+  Vector10d q_cmd;
+  for (int i = 0; i < 6; ++i) q_cmd(i) = q(i) + params::HB_Q_CMD_TAU_SERVO * q_dot(i);
+  for (int i = 6; i < 10; ++i) q_cmd(i) = q(i) + params::HB_Q_CMD_TAU_THRUST * q_dot(i);
+
+  AllocationOutput out;
+  for (int i = 0; i < 4; ++i) out.alpha(i) = std::clamp(q_cmd(i), -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
+  for (int i = 0; i < 2; ++i) out.beta(i) = std::clamp(q_cmd(4 + i), -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
+  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(q_cmd(6 + i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
+
+  previous_cmd = out;
+  return out;
+}
+
+inline HexaAllocationOutput allocation_hexa_a6_ada(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Matrix<double, 6, 1>& d, const Eigen::Vector3d& att_cmd, const Eigen::Matrix<double, 6, 1>& alpha_measured, bool servo_read, double dt)
+{
+  using Vector6d = Eigen::Matrix<double, 6, 1>;
+  using Vector12d = Eigen::Matrix<double, 12, 1>;
+  using Matrix66d = Eigen::Matrix<double, 6, 6>;
+  using Matrix612d = Eigen::Matrix<double, 6, 12>;
+  using Matrix126d = Eigen::Matrix<double, 12, 6>;
+  using Matrix1212d = Eigen::Matrix<double, 12, 12>;
+
+  static bool initialized = false;
+  static HexaAllocationOutput previous_cmd;
+  static Vector6d rms_gradient = Vector6d::Zero();
+
+  if (!initialized)
   {
-    const double alpha = q(i);
-    const double beta = q(4 + beta_index[i]);
-    const double f = q(6 + i);
+    previous_cmd.alpha = alpha_measured;
+    previous_cmd.f.setConstant(force_cmd.norm() / 6.0);
+    initialized = true;
+  }
 
+  // q = [alpha_0 ... alpha_5 f_0 ... f_5]^T, where f_i is one coaxial arm pair's total thrust.
+  Vector12d q;
+  q.segment<6>(0) = servo_read ? alpha_measured : previous_cmd.alpha;
+  q.segment<6>(6) = previous_cmd.f;
+
+  // XML arms transformed from MuJoCo z-up to the controller's z-down body frame.
+  static const std::array<double, 6> arm_yaw = {
+    0.5 * M_PI, -0.5 * M_PI, -M_PI / 6.0,
+    5.0 * M_PI / 6.0, M_PI / 6.0, -5.0 * M_PI / 6.0
+  };
+  static const std::array<double, 6> reaction_sign = {1.0, -1.0, 1.0, -1.0, -1.0, 1.0};
+
+  Vector6d W_now = Vector6d::Zero();
+  Matrix612d J = Matrix612d::Zero();
+
+  for (int i = 0; i < 6; ++i) {
+    const double alpha = q(i);
+    const double f = q(6 + i);
+    const double yaw = arm_yaw[i];
     const double sa = std::sin(alpha);
     const double ca = std::cos(alpha);
-    const double sb = std::sin(beta);
-    const double cb = std::cos(beta);
 
-    const Eigen::Vector3d r_i(x_sign[i] * params::L, y_sign[i] * params::L, 0.0);
-    const Eigen::Vector3d e_i(-sb * ca, sa, -cb * ca);
-    const Eigen::Vector3d de_dalpha(sb * sa, ca, cb * sa);
-    const Eigen::Vector3d de_dbeta(-cb * ca, 0.0, sb * ca);
+    const Eigen::Vector3d r_i(
+      params::HEXA_L * std::cos(yaw),
+      params::HEXA_L * std::sin(yaw),
+      0.0);
+    const Eigen::Vector3d e_i(-std::sin(yaw) * sa, std::cos(yaw) * sa, -ca);
+    const Eigen::Vector3d de_dalpha(-std::sin(yaw) * ca, std::cos(yaw) * ca, sa);
 
-    // D_i(v) = [r_i x v + sigma_i zeta v; v]
-    const auto wrenchDirection = [&](const Eigen::Vector3d& v) 
-    {
+    const auto wrench_direction = [&](const Eigen::Vector3d& v) {
       Vector6d D;
-      D.segment<3>(0) = r_i.cross(v) + reaction_sign[i] * params::zeta * v;
+      D.segment<3>(0) = r_i.cross(v) + reaction_sign[i] * params::HEXA_ZETA * v;
       D.segment<3>(3) = v;
       return D;
     };
 
-    const Vector6d D_e = wrenchDirection(e_i);
-    const Vector6d D_alpha = wrenchDirection(de_dalpha);
-    const Vector6d D_beta = wrenchDirection(de_dbeta);
-
+    const Vector6d D_e = wrench_direction(e_i);
     W_now += f * D_e;
-
-    // J = dW/dq = [dW/dalpha(4) dW/dbeta(2) dW/df(4)]
-    J.col(i) = f * D_alpha;
-    J.col(4 + beta_index[i]) += f * D_beta;
+    J.col(i) = f * wrench_direction(de_dalpha);
     J.col(6 + i) = D_e;
   }
 
   Vector6d W_des;
   W_des << moment_cmd, force_cmd;
 
-  // (7) W_dot_des = Kj (W_des - W(q))
-  Matrix66d Kj = Matrix66d::Zero();
-  for (int i = 0; i < 6; ++i) Kj(i, i) = params::ada_kj_diag[i];
-  const Vector6d W_dot_des = Kj * (W_des - W_now);
+  // Paper (7): augment wrench tracking into a differential wrench command.
+  const Vector6d W_dot_des = params::HEXA_KJ * (W_des - W_now);
 
-  // (5) J_dagger = W_q^{-1} J^T (J W_q^{-1} J^T)^{-1}
-  const double disturbance_rms = d.maxCoeff();
-  const double weight_ratio = std::clamp(
-      (disturbance_rms - params::ada_weight_rms_active)
-      / (params::ada_weight_rms_full - params::ada_weight_rms_active),
-      0.0,
-      1.0);
-  const double weight_blend = weight_ratio * weight_ratio * (3.0 - 2.0 * weight_ratio);
-  const double f_inverse_weight = params::ada_W_inv_diag[6] + weight_blend * (params::ada_W_inv_f_disturbed - params::ada_W_inv_diag[6]);
+  // Paper (5): fixed weighted pseudoinverse. The nullspace term below selects posture.
+  const Matrix66d JWJ_inv = (J * params::HEXA_W_INV * J.transpose()).completeOrthogonalDecomposition().solve(Matrix66d::Identity());
+  const Matrix126d J_dagger = params::HEXA_W_INV * J.transpose() * JWJ_inv;
 
-  Matrix1010d W_q_inv = Matrix1010d::Zero();
-  for (int i = 0; i < 6; ++i) W_q_inv(i, i) = params::ada_W_inv_diag[i];
-  for (int i = 6; i < 10; ++i) W_q_inv(i, i) = f_inverse_weight;
+  // Transplanted from the previous a4b2 nullspace-gradient implementation.
+  // q_dot_star is integrated only through N(q) = I - J_dagger J, preserving the primary wrench.
+  Vector12d q_dot_star = Vector12d::Zero();
+  const Eigen::Vector3d thrust_dir_ref = rpyToRot(att_cmd).transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
+  const double f_ref = force_cmd.norm() / 6.0;
+  const double rms = d.head<2>().norm();
 
-  const Matrix66d JWJ = J * W_q_inv * J.transpose();
-  const Matrix66d JWJ_inv = JWJ.completeOrthogonalDecomposition().solve(Matrix66d::Identity());
-  const Matrix106d J_dagger = W_q_inv * J.transpose() * JWJ_inv;
-
-  Vector10d q_dot = J_dagger * W_dot_des;
-
-  // (13) sat(q_dot) = k_s q_dot
-  double k_s = 1.0;
-  for (int i = 0; i < 10; ++i) if (std::abs(q_dot(i)) > params::ada_q_dot_max[i]) k_s = std::min(k_s, params::ada_q_dot_max[i] / std::abs(q_dot(i)));
-  q_dot *= k_s;
-
-  // W(q), J(q) use the selected servo state; q_dot integration keeps the previous command state.
-  Vector10d q_cmd_prev = q;
-  q_cmd_prev.segment<4>(0) = previous_cmd.alpha;
-  q_cmd_prev.segment<2>(4) = previous_cmd.beta;
-  const Vector10d q_cmd = q_cmd_prev + std::max(dt, 0.0) * q_dot;
-
-
-  AllocationOutput out;
-  for (int i = 0; i < 4; ++i) 
-  {
-    out.alpha(i) = std::clamp(q_cmd(i), -params::alpha_limit_rad, params::alpha_limit_rad);
-    out.f(i) = std::clamp(q_cmd(6 + i), params::f_cmd_min, params::f_cmd_max);
+  if (rms > params::HEXA_RMS_ACTIVE) {
+    for (int i = 0; i < 6; ++i) {
+      const double yaw = arm_yaw[i];
+      const Eigen::Vector3d tangent(-std::sin(yaw), std::cos(yaw), 0.0);
+      rms_gradient(i) += 10.0 * dt * (d(0) * d(0) * tangent(0) + d(1) * d(1) * tangent(1));
+    }
   }
-  for (int i = 0; i < 2; ++i) out.beta(i) = std::clamp(q_cmd(4 + i), -params::beta_limit_rad, params::beta_limit_rad);
+  else {
+    rms_gradient *= std::exp(-dt / params::HEXA_RMS_DECAY_TAU);
+  }
+
+  for (int i = 0; i < 6; ++i) {
+    const double yaw = arm_yaw[i];
+    const Eigen::Vector3d tangent(-std::sin(yaw), std::cos(yaw), 0.0);
+    const double alpha_ref = std::atan2(tangent.dot(thrust_dir_ref), -thrust_dir_ref(2));
+    const double alpha_target = alpha_ref + rms_gradient(i);
+
+    q_dot_star(i) = params::HEXA_NULL_K[0] * (alpha_target - q(i));
+    q_dot_star(6 + i) = params::HEXA_NULL_K[1] * (f_ref - q(6 + i));
+  }
+
+  const Matrix1212d nullspace = Matrix1212d::Identity() - J_dagger * J;
+  Vector12d q_dot = J_dagger * W_dot_des + nullspace * q_dot_star;
+
+  Vector12d q_cmd_prev = q;
+  q_cmd_prev.segment<6>(0) = previous_cmd.alpha;
+  const Vector12d q_cmd = q_cmd_prev + dt * q_dot;
+
+  HexaAllocationOutput out;
+  for (int i = 0; i < 6; ++i) {
+    out.alpha(i) = q_cmd(i);
+    out.f(i) = q_cmd(6 + i);
+  }
 
   previous_cmd = out;
   return out;
-}
-
-inline AllocationCheck checkAllocation(const AllocationOutput& alloc, const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
-{
-  AllocationCheck result;
-
-  for (int i = 0; i < 4; ++i) {
-    const double x_sign = (i == 0 || i == 3) ? 1.0 : -1.0;
-    const double y_sign = (i == 0 || i == 1) ? 1.0 : -1.0;
-    const double spin = (i % 2 == 0) ? 1.0 : -1.0;
-
-    const double beta = (i == 0 || i == 3) ? alloc.beta(0) : alloc.beta(1);
-    const double alpha = alloc.alpha(i);
-
-    Eigen::Vector3d e_i;
-    e_i << -std::sin(beta) * std::cos(alpha), std::sin(alpha), -std::cos(beta) * std::cos(alpha);
-
-    Eigen::Vector3d r_i;
-    r_i << x_sign * params::L, y_sign * params::L, 0.0;
-
-    const Eigen::Vector3d force_i = alloc.f(i) * e_i;
-    const Eigen::Vector3d moment_i = r_i.cross(force_i) + spin * params::zeta * alloc.f(i) * e_i;
-
-    result.force_actual += force_i;
-    result.moment_actual += moment_i;
-  }
-
-  result.moment_error = moment_cmd - result.moment_actual;
-  result.force_error = force_cmd - result.force_actual;
-
-  const double err_m_norm = result.moment_error.norm();
-  const double err_f_norm = result.force_error.norm();
-
-  result.problem = (!result.moment_actual.allFinite()) || (!result.force_actual.allFinite()) || (err_f_norm > params::check_force_tol) || (err_m_norm > params::check_moment_tol);
-
-  if (result.problem) {
-    std::ostringstream ss;
-    ss << "\033[31m"
-       << "\n[CA CHECK]"
-       << "\n  error norm"
-       << "\n    err_m_norm = " << err_m_norm << " Nm"
-       << "\n    err_f_norm = " << err_f_norm << " N"
-       << "\n"
-       << "\n  moment [Nm]"
-       << "\n    cmd    = " << moment_cmd.transpose()
-       << "\n    actual = " << result.moment_actual.transpose()
-       << "\n    error  = " << result.moment_error.transpose()
-       << "\n"
-       << "\n  force [N]"
-       << "\n    cmd    = " << force_cmd.transpose()
-       << "\n    actual = " << result.force_actual.transpose()
-       << "\n    error  = " << result.force_error.transpose()
-       << "\n"
-       << "\n  actuator"
-       << "\n    f     = " << alloc.f.transpose()
-       << "\n    beta = " << alloc.beta.transpose()
-       << "\n    alpha   = " << alloc.alpha.transpose()
-       << "\033[0m";
-
-    result.message = ss.str();
-  }
-
-  return result;
 }
 
 }

@@ -1,6 +1,8 @@
 # MuJoCo world: z-up
 # IMU: z-down, x-axis same as body x-axis
 
+float64 sim_time  # MuJoCo simulation time [s]
+
 float64[3] pos       # [m]
 float64[3] vel       # [m/s]
 float64[3] acc       # [m/s^2]
@@ -11,8 +13,10 @@ float64[3] w_rpy     # [w_roll, w_pitch, w_yaw] [rad/s]
 float64[3] a_rpy     # [a_roll, a_pitch, a_yaw] [rad/s^2]
 
 float64[3] imu_acc   # z-down IMU acceleration [m/s^2]
+float64[3] disturbance_force  # externally measured force in controller world frame [N]
 
 float64[2] beta     # beta_1, beta_2 [rad]
 float64[4] alpha   # alpha_1 ... alpha_4 [rad]
+float64[6] hexa_alpha  # tilt_unit_0 ... tilt_unit_5 [rad]
 
 float64[6] lidar   # front, back, left, right, up, down [m], -1: no hit

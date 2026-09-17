@@ -7,7 +7,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from multirotor_interfaces.msg import MultirotorState, Cmd, Wrench, Input
+from multirotor_interfaces.msg import MultirotorState, Cmd, Wrench, Input, HexaInput
 
 from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
@@ -30,6 +30,7 @@ C_O = "#f58231"
 
 C3 = [C_R, C_G, C_B]
 C4 = [C_R, C_G, C_B, C_O]
+C6 = [C_R, C_G, C_B, C_O, "#911eb4", "#42d4f4"]
 
 ROTOR_BODY_XY = np.array([
     [0.175, 0.175],
@@ -41,6 +42,16 @@ ROTOR_PLOT_YX = ROTOR_BODY_XY[:, [1, 0]]
 BETA_INDEX = np.array([0, 1, 1, 0], dtype=int)
 TILT_VECTOR_SCALE = 0.35
 TILT_ARROW_HEAD = 0.035
+
+# Same controller z-down arm order used by allocation_hexa_a6_ada().
+HEXA_ARM_YAW = np.array([
+    0.5 * math.pi, -0.5 * math.pi, -math.pi / 6.0,
+    5.0 * math.pi / 6.0, math.pi / 6.0, -5.0 * math.pi / 6.0
+], dtype=float)
+HEXA_ROTOR_BODY_XY = 0.30 * np.column_stack((
+    np.cos(HEXA_ARM_YAW), np.sin(HEXA_ARM_YAW)
+))
+HEXA_ROTOR_PLOT_YX = HEXA_ROTOR_BODY_XY[:, [1, 0]]
 
 
 class Ring:
@@ -97,6 +108,16 @@ def tilt_xy_components(alpha_deg, beta_deg):
     ))
 
 
+def hexa_tilt_xy_components(alpha_deg):
+    alpha = np.asarray(alpha_deg, dtype=float) / RAD2DEG
+    tangent = np.column_stack((
+        -np.sin(HEXA_ARM_YAW), np.cos(HEXA_ARM_YAW)
+    ))
+
+    # Horizontal component of e_i = tangent_i sin(alpha_i) - z cos(alpha_i).
+    return np.sin(alpha)[:, None] * tangent
+
+
 def vector_polyline(origin, vector):
     tip = origin + TILT_VECTOR_SCALE * vector
     delta = tip - origin
@@ -120,6 +141,11 @@ def vector_polyline(origin, vector):
 class VNode(Node):
     def __init__(self):
         super().__init__("multirotor_viewer")
+        self.vehicle = self.declare_parameter("vehicle", "hummingbird").value
+        if self.vehicle not in ("hummingbird", "hexa"):
+            raise ValueError(f"vehicle must be hummingbird or hexa, got {self.vehicle}")
+        self.is_hexa = self.vehicle == "hexa"
+
         self.lock = threading.Lock()
         self.t0 = self.get_clock().now().nanoseconds * 1e-9
 
@@ -152,11 +178,17 @@ class VNode(Node):
 
         self.buf_pair_actual = Ring(MAX_SAMPLES, 5)
         self.buf_pair_cmd = Ring(MAX_SAMPLES, 5)
+        self.buf_hexa_alpha = Ring(MAX_SAMPLES, 7)
+        self.buf_hexa_alpha_cmd = Ring(MAX_SAMPLES, 7)
+        self.buf_hexa_thr = Ring(MAX_SAMPLES, 7)
 
         self.create_subscription(MultirotorState, "/multirotor_state", self._cb_state, 10)
         self.create_subscription(Cmd, "/cmd", self._cb_cmd, 10)
         self.create_subscription(Wrench, "/wrench", self._cb_wrench, 10)
-        self.create_subscription(Input, "/input", self._cb_input, 10)
+        if self.is_hexa:
+            self.create_subscription(HexaInput, "/hexa_input", self._cb_hexa_input, 10)
+        else:
+            self.create_subscription(Input, "/input", self._cb_input, 10)
 
     def _t(self):
         return self.get_clock().now().nanoseconds * 1e-9 - self.t0
@@ -166,8 +198,11 @@ class VNode(Node):
 
         pos = np.array([m.pos[0], m.pos[1], m.pos[2]], dtype=float)
         rpy_deg = np.array([m.rpy[0], m.rpy[1], m.rpy[2]], dtype=float) * RAD2DEG
-        beta_deg = np.array([m.beta[0], m.beta[1]], dtype=float) * RAD2DEG
-        alpha_deg = np.array([m.alpha[0], m.alpha[1], m.alpha[2], m.alpha[3]], dtype=float) * RAD2DEG
+        if self.is_hexa:
+            hexa_alpha_deg = np.array(m.hexa_alpha[:6], dtype=float) * RAD2DEG
+        else:
+            beta_deg = np.array([m.beta[0], m.beta[1]], dtype=float) * RAD2DEG
+            alpha_deg = np.array([m.alpha[0], m.alpha[1], m.alpha[2], m.alpha[3]], dtype=float) * RAD2DEG
 
         pos_err = self.last_pos_cmd - pos
 
@@ -196,8 +231,11 @@ class VNode(Node):
 
             self.buf_pos.push([t, pos[0], pos[1], pos[2]])
             self.buf_rpy.push([t, rpy_deg[0], rpy_deg[1], rpy_deg[2]])
-            self.buf_beta.push([t, beta_deg[0], beta_deg[1]])
-            self.buf_alpha.push([t, alpha_deg[0], alpha_deg[1], alpha_deg[2], alpha_deg[3]])
+            if self.is_hexa:
+                self.buf_hexa_alpha.push([t, *hexa_alpha_deg])
+            else:
+                self.buf_beta.push([t, beta_deg[0], beta_deg[1]])
+                self.buf_alpha.push([t, alpha_deg[0], alpha_deg[1], alpha_deg[2], alpha_deg[3]])
             self.buf_pos_err.push([t, pos_err[0], pos_err[1], pos_err[2]])
             self.buf_att_err.push([t, att_err[0], att_err[1], att_err[2]])
 
@@ -241,6 +279,15 @@ class VNode(Node):
             self.buf_beta_cmd.push([t, beta_cmd_deg[0], beta_cmd_deg[1]])
             self.buf_alpha_cmd.push([t, alpha_cmd_deg[0], alpha_cmd_deg[1], alpha_cmd_deg[2], alpha_cmd_deg[3]])
 
+    def _cb_hexa_input(self, m):
+        t = self._t()
+        f = np.array(m.f[:6], dtype=float)
+        alpha_cmd_deg = np.array(m.alpha[:6], dtype=float) * RAD2DEG
+
+        with self.lock:
+            self.buf_hexa_thr.push([t, *f])
+            self.buf_hexa_alpha_cmd.push([t, *alpha_cmd_deg])
+
 
 def _pen(color, w=2):
     return pg.mkPen(color=color, width=w, style=QtCore.Qt.SolidLine)
@@ -274,8 +321,9 @@ class Win(QtWidgets.QMainWindow):
     def __init__(self, node):
         super().__init__()
         self.node = node
+        self.is_hexa = node.is_hexa
 
-        self.setWindowTitle("Sim_HummingBird Viewer")
+        self.setWindowTitle(f"Sim_HummingBird Viewer ({node.vehicle})")
         self.resize(1800, 1050)
 
         tabs = QtWidgets.QTabWidget()
@@ -293,14 +341,20 @@ class Win(QtWidgets.QMainWindow):
         self.act_glw = pg.GraphicsLayoutWidget()
 
         tabs.addTab(self.state_glw, "State")
-        tabs.addTab(self.nullspace_glw, "Nullspace XY")
+        tabs.addTab(self.nullspace_glw, "Tilt Direction" if self.is_hexa else "Nullspace XY")
         tabs.addTab(self.disturbance_glw, "Disturbance RMS")
         tabs.addTab(self.act_glw, "Actuator")
 
         self._build_state_tab()
-        self._build_nullspace_tab()
+        if self.is_hexa:
+            self._build_hexa_nullspace_tab()
+        else:
+            self._build_nullspace_tab()
         self._build_disturbance_tab()
-        self._build_actuator_tab()
+        if self.is_hexa:
+            self._build_hexa_actuator_tab()
+        else:
+            self._build_actuator_tab()
 
         self._timer = QtCore.QTimer()
         self._timer.timeout.connect(self._upd)
@@ -471,6 +525,104 @@ class Win(QtWidgets.QMainWindow):
         )
         self.nullspace_glw.addItem(self.nullspace_label, row=2, col=1)
 
+    def _build_hexa_nullspace_tab(self):
+        p_xy = _mkplot(
+            self.nullspace_glw,
+            0,
+            0,
+            "Radial tilt direction in body XY plane (x up, y right)",
+            "body x [m]",
+            rowspan=3
+        )
+        p_xy.setLabel("bottom", "body y [m]")
+        p_xy.setAspectLocked(True)
+        p_xy.setXRange(-0.72, 0.72, padding=0)
+        p_xy.setYRange(-0.72, 0.72, padding=0)
+        p_xy.addLine(x=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
+        p_xy.addLine(y=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
+
+        for i, (origin, color) in enumerate(zip(HEXA_ROTOR_PLOT_YX, C6)):
+            p_xy.plot([0.0, origin[0]], [0.0, origin[1]], pen=pg.mkPen("#888888", width=2))
+            p_xy.plot(
+                [origin[0]],
+                [origin[1]],
+                pen=None,
+                symbol="o",
+                symbolSize=13,
+                symbolBrush=color,
+                symbolPen=pg.mkPen("k")
+            )
+            tilt_label = pg.TextItem(f"A{i}", color=color, anchor=(0.5, 1.4))
+            tilt_label.setPos(origin[0], origin[1])
+            p_xy.addItem(tilt_label)
+
+        p_xy.plot([0.0, 0.10], [0.0, 0.0], pen=pg.mkPen("#555555", width=3))
+        y_label = pg.TextItem("+y", color="#333333", anchor=(0.0, 0.5))
+        y_label.setPos(0.11, 0.0)
+        p_xy.addItem(y_label)
+        p_xy.plot([0.0, 0.0], [0.0, 0.10], pen=pg.mkPen("#555555", width=3))
+        x_label = pg.TextItem("+x", color="#333333", anchor=(0.5, 1.0))
+        x_label.setPos(0.0, 0.11)
+        p_xy.addItem(x_label)
+
+        self._xy_actual = []
+        self._xy_cmd = []
+        for i, color in enumerate(C6):
+            cmd_curve = p_xy.plot(
+                pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine),
+                name="commanded tilt" if i == 0 else None,
+                connect="finite"
+            )
+            actual_curve = p_xy.plot(
+                pen=pg.mkPen(color=color, width=3),
+                name="measured tilt" if i == 0 else None,
+                connect="finite"
+            )
+            cmd_curve.setZValue(3)
+            actual_curve.setZValue(4)
+            self._xy_cmd.append(cmd_curve)
+            self._xy_actual.append(actual_curve)
+
+        p_dxy = _mkplot(
+            self.nullspace_glw,
+            0,
+            1,
+            "RMS inputs driving radial tilt gradient",
+            "d RMS [m]"
+        )
+        self._cv["null_d_x"] = p_dxy.plot(pen=_pen(C_R), name="d_x")
+        self._cv["null_d_y"] = p_dxy.plot(pen=_pen(C_G), name="d_y")
+        self._plots_nullspace.append(p_dxy)
+
+        p_alpha = _mkplot(
+            self.nullspace_glw,
+            1,
+            1,
+            "Radial tilt angle",
+            "alpha [deg]"
+        )
+        for i, color in enumerate(C6):
+            self._cv[f"hexa_null_alpha{i}"] = p_alpha.plot(pen=_pen(color), name=f"alpha{i}")
+            self._cv[f"hexa_null_alphac{i}"] = _bring_front(
+                p_alpha.plot(
+                    pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine),
+                    name=f"alpha{i}_cmd"
+                )
+            )
+        self._plots_nullspace.append(p_alpha)
+
+        p_alpha.setXLink(p_dxy)
+        p_dxy.hideAxis("bottom")
+        p_alpha.setLabel("bottom", "time [s]")
+
+        self.nullspace_label = pg.LabelItem(justify="left")
+        self.nullspace_label.setText(
+            "<div style='font-size:13pt; color:#111;'>"
+            "<b>HEXA nullspace tilt diagnostics</b><br><br>Waiting for data..."
+            "</div>"
+        )
+        self.nullspace_glw.addItem(self.nullspace_label, row=2, col=1)
+
     def _build_disturbance_tab(self):
         pos_lbl = ["x", "y", "z"]
         att_lbl = ["roll", "pitch", "yaw"]
@@ -595,6 +747,48 @@ class Win(QtWidgets.QMainWindow):
             p.showAxis("bottom")
             p.setLabel("bottom", "time [s]")
 
+    def _build_hexa_actuator_tab(self):
+        for i, color in enumerate(C6):
+            p = _mkplot(self.act_glw, i // 3, i % 3, f"f{i} command", f"f{i} [N]")
+            self._cv[f"hexa_f_single{i}"] = p.plot(pen=_pen(color), name=f"f{i}")
+            self._plots_act.append(p)
+
+        for i, color in enumerate(C6):
+            p = _mkplot(
+                self.act_glw,
+                2 + i // 3,
+                i % 3,
+                f"alpha{i} / alpha{i}_cmd",
+                f"alpha{i} [deg]"
+            )
+            self._cv[f"hexa_alpha_single{i}"] = p.plot(pen=_pen(color), name=f"alpha{i}")
+            self._cv[f"hexa_alphac_single{i}"] = _bring_front(
+                p.plot(pen=_cmd_pen(), name=f"alpha{i}_cmd")
+            )
+            self._plots_act.append(p)
+
+        p_f_all = _mkplot(self.act_glw, 4, 0, "f0-f5 command", "pair thrust [N]", colspan=3)
+        for i, color in enumerate(C6):
+            self._cv[f"hexa_f_all{i}"] = p_f_all.plot(pen=_pen(color), name=f"f{i}")
+        self._plots_act.append(p_f_all)
+
+        self.max_label = pg.LabelItem(justify="left")
+        self.max_label.setText(
+            "<div style='font-size:14pt; color:#111;'>"
+            "<b>Max error since start</b><br><br>Waiting for data..."
+            "</div>"
+        )
+        self.act_glw.addItem(self.max_label, row=4, col=3)
+
+        for p in self._plots_act[1:]:
+            p.setXLink(self._plots_act[0])
+
+        for p in self._plots_act:
+            p.hideAxis("bottom")
+
+        self._plots_act[-1].showAxis("bottom")
+        self._plots_act[-1].setLabel("bottom", "time [s]")
+
     def _update_max_label(self):
         nd = self.node
 
@@ -629,6 +823,17 @@ class Win(QtWidgets.QMainWindow):
         vectors = tilt_xy_components(alpha_data[-1, 1:5], beta_data[-1, 1:3])
         for i, curve in enumerate(curves):
             origin_yx = ROTOR_PLOT_YX[i]
+            vector_yx = vectors[i, [1, 0]]
+            x, y = vector_polyline(origin_yx, vector_yx)
+            curve.setData(x, y, connect="finite")
+
+    def _update_hexa_xy_vectors(self, alpha_data, curves):
+        if not alpha_data.shape[0]:
+            return
+
+        vectors = hexa_tilt_xy_components(alpha_data[-1, 1:7])
+        for i, curve in enumerate(curves):
+            origin_yx = HEXA_ROTOR_PLOT_YX[i]
             vector_yx = vectors[i, [1, 0]]
             x, y = vector_polyline(origin_yx, vector_yx)
             curve.setData(x, y, connect="finite")
@@ -671,6 +876,30 @@ class Win(QtWidgets.QMainWindow):
             "</div>"
         )
 
+    def _update_hexa_nullspace_label(self, dd, dw, dalpha, dalpha_cmd):
+        if not dd.shape[0]:
+            return
+
+        d_now = dd[-1, 1:7]
+        force_now = dw[-1, 1:4] if dw.shape[0] else np.full(3, np.nan)
+        alpha_now = dalpha[-1, 1:7] if dalpha.shape[0] else np.full(6, np.nan)
+        alpha_cmd = dalpha_cmd[-1, 1:7] if dalpha_cmd.shape[0] else np.full(6, np.nan)
+
+        self.nullspace_label.setText(
+            "<div style='font-size:12pt; color:#111;'>"
+            "<b>HEXA nullspace tilt diagnostics</b><br>"
+            f"d_pos RMS [m] = [{d_now[0]:.3f}, {d_now[1]:.3f}, {d_now[2]:.3f}]<br>"
+            f"d_att RMS [deg] = [{d_now[3]:.2f}, {d_now[4]:.2f}, {d_now[5]:.2f}]<br>"
+            f"F_body [N] = [{force_now[0]:.2f}, {force_now[1]:.2f}, {force_now[2]:.2f}]<br><br>"
+            f"alpha measured [deg] = [{', '.join(f'{value:.1f}' for value in alpha_now)}]<br>"
+            f"alpha commanded [deg] = [{', '.join(f'{value:.1f}' for value in alpha_cmd)}]<br><br>"
+            "<b>Mapping</b>: each arrow is the horizontal thrust component "
+            "sin(alpha_i) tangent_i.<br>"
+            "Radial nullspace target uses d_x^2 tangent_x + d_y^2 tangent_y.<br>"
+            "Solid: measured, dashed: commanded"
+            "</div>"
+        )
+
     def _upd(self):
         nd = self.node
 
@@ -688,9 +917,12 @@ class Win(QtWidgets.QMainWindow):
             dthc = nd.buf_beta_cmd.get()
             dphc = nd.buf_alpha_cmd.get()
             df = nd.buf_thr.get()
+            dha = nd.buf_hexa_alpha.get()
+            dhac = nd.buf_hexa_alpha_cmd.get()
+            dhf = nd.buf_hexa_thr.get()
 
         tn = 0.0
-        for d in (dp, dc, dpe, dr, da, dae, dw, dd, dth, dph, dthc, dphc, df):
+        for d in (dp, dc, dpe, dr, da, dae, dw, dd, dth, dph, dthc, dphc, df, dha, dhac, dhf):
             if d.shape[0]:
                 tn = max(tn, d[-1, 0])
 
@@ -715,6 +947,9 @@ class Win(QtWidgets.QMainWindow):
         dthc = tr(dthc)
         dphc = tr(dphc)
         df = tr(df)
+        dha = tr(dha)
+        dhac = tr(dhac)
+        dhf = tr(dhf)
 
         cv = self._cv
 
@@ -750,43 +985,63 @@ class Win(QtWidgets.QMainWindow):
             for i in range(3):
                 cv[f"aerr{i}"].setData(dae[:, 0], dae[:, 1 + i])
 
-        if df.shape[0]:
-            for i in range(4):
-                cv[f"f_single{i}"].setData(df[:, 0], df[:, 1 + i])
-                cv[f"f_all{i}"].setData(df[:, 0], df[:, 1 + i])
+        if self.is_hexa:
+            if dhf.shape[0]:
+                for i in range(6):
+                    cv[f"hexa_f_single{i}"].setData(dhf[:, 0], dhf[:, 1 + i])
+                    cv[f"hexa_f_all{i}"].setData(dhf[:, 0], dhf[:, 1 + i])
 
-            f14 = 0.5 * (df[:, 1] + df[:, 4])
-            f23 = 0.5 * (df[:, 2] + df[:, 3])
-            cv["f_pair14"].setData(df[:, 0], f14)
-            cv["f_pair23"].setData(df[:, 0], f23)
+            if dha.shape[0]:
+                for i in range(6):
+                    cv[f"hexa_alpha_single{i}"].setData(dha[:, 0], dha[:, 1 + i])
+                    cv[f"hexa_null_alpha{i}"].setData(dha[:, 0], dha[:, 1 + i])
 
-        if dph.shape[0]:
-            for i in range(4):
-                cv[f"alpha_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
-            alpha_spread = 0.25 * (dph[:, 1] + dph[:, 2] - dph[:, 3] - dph[:, 4])
-            cv["alpha_spread"].setData(dph[:, 0], alpha_spread)
+            if dhac.shape[0]:
+                for i in range(6):
+                    cv[f"hexa_alphac_single{i}"].setData(dhac[:, 0], dhac[:, 1 + i])
+                    cv[f"hexa_null_alphac{i}"].setData(dhac[:, 0], dhac[:, 1 + i])
 
-        if dphc.shape[0]:
-            for i in range(4):
-                cv[f"alphac_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
-            alpha_spread_cmd = 0.25 * (dphc[:, 1] + dphc[:, 2] - dphc[:, 3] - dphc[:, 4])
-            cv["alpha_spread_cmd"].setData(dphc[:, 0], alpha_spread_cmd)
+            self._update_hexa_xy_vectors(dha, self._xy_actual)
+            self._update_hexa_xy_vectors(dhac, self._xy_cmd)
+            self._update_hexa_nullspace_label(dd, dw, dha, dhac)
+        else:
+            if df.shape[0]:
+                for i in range(4):
+                    cv[f"f_single{i}"].setData(df[:, 0], df[:, 1 + i])
+                    cv[f"f_all{i}"].setData(df[:, 0], df[:, 1 + i])
 
-        if dth.shape[0]:
-            for i in range(2):
-                cv[f"beta_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
-            beta_spread = 0.5 * (dth[:, 1] - dth[:, 2])
-            cv["beta_spread"].setData(dth[:, 0], beta_spread)
+                f14 = 0.5 * (df[:, 1] + df[:, 4])
+                f23 = 0.5 * (df[:, 2] + df[:, 3])
+                cv["f_pair14"].setData(df[:, 0], f14)
+                cv["f_pair23"].setData(df[:, 0], f23)
 
-        if dthc.shape[0]:
-            for i in range(2):
-                cv[f"betac_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
-            beta_spread_cmd = 0.5 * (dthc[:, 1] - dthc[:, 2])
-            cv["beta_spread_cmd"].setData(dthc[:, 0], beta_spread_cmd)
+            if dph.shape[0]:
+                for i in range(4):
+                    cv[f"alpha_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
+                alpha_spread = 0.25 * (dph[:, 1] + dph[:, 2] - dph[:, 3] - dph[:, 4])
+                cv["alpha_spread"].setData(dph[:, 0], alpha_spread)
 
-        self._update_xy_vectors(dph, dth, self._xy_actual)
-        self._update_xy_vectors(dphc, dthc, self._xy_cmd)
-        self._update_nullspace_label(dd, dw, dph, dth, dphc, dthc)
+            if dphc.shape[0]:
+                for i in range(4):
+                    cv[f"alphac_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
+                alpha_spread_cmd = 0.25 * (dphc[:, 1] + dphc[:, 2] - dphc[:, 3] - dphc[:, 4])
+                cv["alpha_spread_cmd"].setData(dphc[:, 0], alpha_spread_cmd)
+
+            if dth.shape[0]:
+                for i in range(2):
+                    cv[f"beta_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
+                beta_spread = 0.5 * (dth[:, 1] - dth[:, 2])
+                cv["beta_spread"].setData(dth[:, 0], beta_spread)
+
+            if dthc.shape[0]:
+                for i in range(2):
+                    cv[f"betac_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
+                beta_spread_cmd = 0.5 * (dthc[:, 1] - dthc[:, 2])
+                cv["beta_spread_cmd"].setData(dthc[:, 0], beta_spread_cmd)
+
+            self._update_xy_vectors(dph, dth, self._xy_actual)
+            self._update_xy_vectors(dphc, dthc, self._xy_cmd)
+            self._update_nullspace_label(dd, dw, dph, dth, dphc, dthc)
 
         self._update_max_label()
 

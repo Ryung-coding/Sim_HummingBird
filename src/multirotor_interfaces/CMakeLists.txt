@@ -7,6 +7,7 @@ find_package(std_msgs REQUIRED)
 
 set(msg_files
   "msg/Input.msg"
+  "msg/HexaInput.msg"
   "msg/MultirotorState.msg"
   "msg/Cmd.msg"
   "msg/Wrench.msg"

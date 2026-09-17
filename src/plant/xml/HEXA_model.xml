@@ -1,0 +1,200 @@
+<mujoco model="HEXA_model">
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.002" gravity="0 0 -9.81" integrator="RK4"/>
+  <visual>
+    <global offwidth="3840" offheight="2160"/>
+  </visual>
+
+  <default>
+    <joint damping="0.02" armature="0.0002"/>
+    <geom condim="3" friction="0.8 0.02 0.001"/>
+    <default class="rotor">
+      <joint damping="0.00002" armature="0.000001"/>
+      <geom type="cylinder" size="0.1143 0.0025" rgba="0.04 0.04 0.04 0.42" mass="0.0065"/>
+    </default>
+    <default class="tilt">
+      <joint type="hinge" axis="1 0 0" limited="true" range="-3.14159265359 3.14159265359" damping="0.25" armature="0.006"/>
+      <geom type="box" size="0.035 0.085 0.025" rgba="0.88 0.88 0.82 1"/>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="omav_core_mesh" file="mesh/omav_core.obj"/>
+    <mesh name="omav_tiltarm_mesh" file="mesh/omav_tiltarm.obj"/>
+    <mesh name="propeller_cw_mesh" file="mesh/propeller_cw.obj" scale="0.1143 0.1143 0.1143"/>
+    <mesh name="propeller_ccw_mesh" file="mesh/propeller_ccw.obj" scale="0.1143 0.1143 0.1143"/>
+    <material name="core_mat" rgba="0.08 0.12 0.14 1"/>
+    <material name="arm_mat" rgba="0.92 0.58 0.18 1"/>
+    <material name="front_rotor_mat" rgba="0.96 0.42 0.12 0.5"/>
+    <material name="rear_rotor_mat" rgba="0.15 0.17 0.18 0.45"/>
+    <material name="mesh_core_mat" rgba="0.10 0.12 0.13 1"/>
+    <material name="mesh_tilt_mat" rgba="0.88 0.88 0.82 1"/>
+    <material name="mesh_prop_dark_mat" rgba="0.04 0.04 0.04 1"/>
+    <material name="mesh_prop_orange_mat" rgba="0.95 0.40 0.10 1"/>
+  </asset>
+
+  <worldbody>
+    <body name="base_link" pos="0 0 0.18">
+      <freejoint name="root"/>
+      <inertial pos="0 0 0" mass="1.61" diaginertia="0.0075 0.010939 0.01369"/>
+      <site name="imu_site" pos="0 0 0" quat="0 1 0 0" size="0.004" rgba="0.1 0.7 1 1"/>
+      <geom name="core_visual" type="mesh" mesh="omav_core_mesh" material="mesh_core_mat" contype="0" conaffinity="0" density="0"/>
+      <geom name="core_collision" type="box" size="0.11 0.11 0.175" rgba="0 0 0 0"/>
+      <geom name="arm_right_collision" type="capsule" fromto="0 0 0 0 -0.30 0" size="0.018" rgba="0 0 0 0"/>
+      <geom name="arm_left_collision" type="capsule" fromto="0 0 0 0 0.30 0" size="0.018" rgba="0 0 0 0"/>
+      <geom name="arm_front_left_collision" type="capsule" fromto="0 0 0 0.2598076 0.15 0" size="0.018" rgba="0 0 0 0"/>
+      <geom name="arm_back_right_collision" type="capsule" fromto="0 0 0 -0.2598076 -0.15 0" size="0.018" rgba="0 0 0 0"/>
+      <geom name="arm_front_right_collision" type="capsule" fromto="0 0 0 0.2598076 -0.15 0" size="0.018" rgba="0 0 0 0"/>
+      <geom name="arm_back_left_collision" type="capsule" fromto="0 0 0 -0.2598076 0.15 0" size="0.018" rgba="0 0 0 0"/>
+
+      <body name="tilt_unit_0" pos="0 -0.30 0" euler="0 0 4.71238898038">
+        <joint name="tilt_unit_0_revolutejoint" class="tilt"/>
+        <inertial pos="0 0 0" mass="0.277" diaginertia="0.00034257 0.0013205 0.0010037"/>
+        <geom name="tilt_visual_0" type="mesh" mesh="omav_tiltarm_mesh" material="mesh_tilt_mat" contype="0" conaffinity="0" density="0"/>
+        <geom name="tilt_collision_0" class="tilt" rgba="0 0 0 0"/>
+        <body name="rotor_0" pos="0 0 0.06">
+          <joint name="rotor_0_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_0_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_0_visual" type="mesh" mesh="propeller_cw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_0_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+        <body name="rotor_6" pos="0 0 -0.06">
+          <joint name="rotor_6_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_6_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_6_visual" type="mesh" mesh="propeller_cw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_6_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+      </body>
+
+      <body name="tilt_unit_1" pos="0 0.30 0" euler="0 0 1.57079632679">
+        <joint name="tilt_unit_1_revolutejoint" class="tilt"/>
+        <inertial pos="0 0 0" mass="0.277" diaginertia="0.00034257 0.0013205 0.0010037"/>
+        <geom name="tilt_visual_1" type="mesh" mesh="omav_tiltarm_mesh" material="mesh_tilt_mat" contype="0" conaffinity="0" density="0"/>
+        <geom name="tilt_collision_1" class="tilt" rgba="0 0 0 0"/>
+        <body name="rotor_1" pos="0 0 0.06">
+          <joint name="rotor_1_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_1_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_1_visual" type="mesh" mesh="propeller_ccw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_1_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+        <body name="rotor_7" pos="0 0 -0.06">
+          <joint name="rotor_7_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_7_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_7_visual" type="mesh" mesh="propeller_ccw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_7_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+      </body>
+
+      <body name="tilt_unit_2" pos="0.2598076 0.15 0" euler="0 0 0.52359877559">
+        <joint name="tilt_unit_2_revolutejoint" class="tilt"/>
+        <inertial pos="0 0 0" mass="0.277" diaginertia="0.00034257 0.0013205 0.0010037"/>
+        <geom name="tilt_visual_2" type="mesh" mesh="omav_tiltarm_mesh" material="mesh_tilt_mat" contype="0" conaffinity="0" density="0"/>
+        <geom name="tilt_collision_2" class="tilt" rgba="0 0 0 0"/>
+        <body name="rotor_2" pos="0 0 0.06">
+          <joint name="rotor_2_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_2_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_2_visual" type="mesh" mesh="propeller_cw_mesh" material="mesh_prop_orange_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_2_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+        <body name="rotor_8" pos="0 0 -0.06">
+          <joint name="rotor_8_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_8_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_8_visual" type="mesh" mesh="propeller_cw_mesh" material="mesh_prop_orange_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_8_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+      </body>
+
+      <body name="tilt_unit_3" pos="-0.2598076 -0.15 0" euler="0 0 3.66519142919">
+        <joint name="tilt_unit_3_revolutejoint" class="tilt"/>
+        <inertial pos="0 0 0" mass="0.277" diaginertia="0.00034257 0.0013205 0.0010037"/>
+        <geom name="tilt_visual_3" type="mesh" mesh="omav_tiltarm_mesh" material="mesh_tilt_mat" contype="0" conaffinity="0" density="0"/>
+        <geom name="tilt_collision_3" class="tilt" rgba="0 0 0 0"/>
+        <body name="rotor_3" pos="0 0 0.06">
+          <joint name="rotor_3_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_3_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_3_visual" type="mesh" mesh="propeller_ccw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_3_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+        <body name="rotor_9" pos="0 0 -0.06">
+          <joint name="rotor_9_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_9_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_9_visual" type="mesh" mesh="propeller_ccw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_9_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+      </body>
+
+      <body name="tilt_unit_4" pos="0.2598076 -0.15 0" euler="0 0 5.75958653158">
+        <joint name="tilt_unit_4_revolutejoint" class="tilt"/>
+        <inertial pos="0 0 0" mass="0.277" diaginertia="0.00034257 0.0013205 0.0010037"/>
+        <geom name="tilt_visual_4" type="mesh" mesh="omav_tiltarm_mesh" material="mesh_tilt_mat" contype="0" conaffinity="0" density="0"/>
+        <geom name="tilt_collision_4" class="tilt" rgba="0 0 0 0"/>
+        <body name="rotor_4" pos="0 0 0.06">
+          <joint name="rotor_4_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_4_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_4_visual" type="mesh" mesh="propeller_ccw_mesh" material="mesh_prop_orange_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_4_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+        <body name="rotor_10" pos="0 0 -0.06">
+          <joint name="rotor_10_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_10_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_10_visual" type="mesh" mesh="propeller_ccw_mesh" material="mesh_prop_orange_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_10_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+      </body>
+
+      <body name="tilt_unit_5" pos="-0.2598076 0.15 0" euler="0 0 2.61799387799">
+        <joint name="tilt_unit_5_revolutejoint" class="tilt"/>
+        <inertial pos="0 0 0" mass="0.277" diaginertia="0.00034257 0.0013205 0.0010037"/>
+        <geom name="tilt_visual_5" type="mesh" mesh="omav_tiltarm_mesh" material="mesh_tilt_mat" contype="0" conaffinity="0" density="0"/>
+        <geom name="tilt_collision_5" class="tilt" rgba="0 0 0 0"/>
+        <body name="rotor_5" pos="0 0 0.06">
+          <joint name="rotor_5_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_5_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_5_visual" type="mesh" mesh="propeller_cw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_5_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+        <body name="rotor_11" pos="0 0 -0.06">
+          <joint name="rotor_11_joint" class="rotor" axis="0 0 1"/>
+          <geom name="rotor_11_disc" class="rotor" rgba="0 0 0 0"/>
+          <geom name="rotor_11_visual" type="mesh" mesh="propeller_cw_mesh" material="mesh_prop_dark_mat" contype="0" conaffinity="0" density="0"/>
+          <site name="rotor_11_thrust" pos="0 0 0" size="0.01" rgba="0.1 0.8 1 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <position name="tilt_0_position" joint="tilt_unit_0_revolutejoint" kp="12" kv="1.0" ctrlrange="-3.14159265359 3.14159265359"/>
+    <position name="tilt_1_position" joint="tilt_unit_1_revolutejoint" kp="12" kv="1.0" ctrlrange="-3.14159265359 3.14159265359"/>
+    <position name="tilt_2_position" joint="tilt_unit_2_revolutejoint" kp="12" kv="1.0" ctrlrange="-3.14159265359 3.14159265359"/>
+    <position name="tilt_3_position" joint="tilt_unit_3_revolutejoint" kp="12" kv="1.0" ctrlrange="-3.14159265359 3.14159265359"/>
+    <position name="tilt_4_position" joint="tilt_unit_4_revolutejoint" kp="12" kv="1.0" ctrlrange="-3.14159265359 3.14159265359"/>
+    <position name="tilt_5_position" joint="tilt_unit_5_revolutejoint" kp="12" kv="1.0" ctrlrange="-3.14159265359 3.14159265359"/>
+    <general name="rotor_0_thrust" site="rotor_0_thrust" gear="0 0 1 0 0 0.05" ctrlrange="0 10"/>
+    <general name="rotor_1_thrust" site="rotor_1_thrust" gear="0 0 1 0 0 -0.05" ctrlrange="0 10"/>
+    <general name="rotor_2_thrust" site="rotor_2_thrust" gear="0 0 1 0 0 0.05" ctrlrange="0 10"/>
+    <general name="rotor_3_thrust" site="rotor_3_thrust" gear="0 0 1 0 0 -0.05" ctrlrange="0 10"/>
+    <general name="rotor_4_thrust" site="rotor_4_thrust" gear="0 0 1 0 0 -0.05" ctrlrange="0 10"/>
+    <general name="rotor_5_thrust" site="rotor_5_thrust" gear="0 0 1 0 0 0.05" ctrlrange="0 10"/>
+    <general name="rotor_6_thrust" site="rotor_6_thrust" gear="0 0 1 0 0 0.05" ctrlrange="0 10"/>
+    <general name="rotor_7_thrust" site="rotor_7_thrust" gear="0 0 1 0 0 -0.05" ctrlrange="0 10"/>
+    <general name="rotor_8_thrust" site="rotor_8_thrust" gear="0 0 1 0 0 0.05" ctrlrange="0 10"/>
+    <general name="rotor_9_thrust" site="rotor_9_thrust" gear="0 0 1 0 0 -0.05" ctrlrange="0 10"/>
+    <general name="rotor_10_thrust" site="rotor_10_thrust" gear="0 0 1 0 0 -0.05" ctrlrange="0 10"/>
+    <general name="rotor_11_thrust" site="rotor_11_thrust" gear="0 0 1 0 0 0.05" ctrlrange="0 10"/>
+  </actuator>
+
+  <sensor>
+    <framequat name="imu_quat" objtype="site" objname="imu_site"/>
+    <gyro name="imu_gyro" site="imu_site"/>
+    <accelerometer name="imu_acc" site="imu_site"/>
+    <framepos name="body_pos" objtype="body" objname="base_link"/>
+    <framelinvel name="body_linvel" objtype="body" objname="base_link"/>
+    <jointpos name="encoder_hexa_alpha0" joint="tilt_unit_0_revolutejoint"/>
+    <jointpos name="encoder_hexa_alpha1" joint="tilt_unit_1_revolutejoint"/>
+    <jointpos name="encoder_hexa_alpha2" joint="tilt_unit_2_revolutejoint"/>
+    <jointpos name="encoder_hexa_alpha3" joint="tilt_unit_3_revolutejoint"/>
+    <jointpos name="encoder_hexa_alpha4" joint="tilt_unit_4_revolutejoint"/>
+    <jointpos name="encoder_hexa_alpha5" joint="tilt_unit_5_revolutejoint"/>
+  </sensor>
+</mujoco>

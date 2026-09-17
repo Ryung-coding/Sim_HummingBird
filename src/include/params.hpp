@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <array>
+#include <Eigen/Dense>
 
 namespace params {
 
@@ -10,21 +11,37 @@ static constexpr bool USE_SO3_HEADING_CMD = false;
 static constexpr int RATE_HZ = 400;
 
 // Task parameters-----------------------------------------------
+static constexpr std::array<double, 3> PLANNING_START = {0.00, 0.00, -1.20};
+static constexpr double PLANNING_START_TOLERANCE = 0.12;
+static constexpr double PLANNING_START_HOLD_SEC = 1.00;
 
+static constexpr std::array<double, 3> PLANNING_GOAL = {3.40, 0.00, -1.20};
+static constexpr double PLANNING_AVG_SPEED = 0.50;
 
 // Model parameters -----------------------------------------------
-static constexpr double mass = 3.50;
 static constexpr double grav = 9.81;
 
-static constexpr std::array<double, 3> J = {0.030, 0.030, 0.050};
+static constexpr double HB_MASS = 3.50;
+static constexpr std::array<double, 3> HB_J = {0.030, 0.030, 0.050};
+static constexpr double HB_L = 0.175;
+static constexpr double HB_ZETA = 0.0500;
+static constexpr double HB_Q_CMD_TAU_SERVO = 0.05;
+static constexpr double HB_Q_CMD_TAU_THRUST = 0.01;
+static constexpr double HB_ALPHA_LIMIT_RAD = M_PI / 6.0;
+static constexpr double HB_BETA_LIMIT_RAD = M_PI;
 
-static constexpr double L = 0.175;
-static constexpr double zeta = 0.0500;
+static constexpr std::array<double, 3> HEXA_J = {0.091325, 0.094764, 0.176822}; //form codex
+static constexpr double HEXA_MASS = 3.350; //form codex
+static constexpr double HEXA_L = 0.300; //form codex
+static constexpr double HEXA_ZETA = HB_ZETA;
 
 // position controller -----------------------------------------------
-static constexpr std::array<double, 3> Kp_pos = {40.0, 40.0, 60.0};
-static constexpr std::array<double, 3> Ki_pos = {0.10, 0.10, 0.10};
-static constexpr std::array<double, 3> Kd_pos = {8.0, 8.0, 30.0};
+// static constexpr std::array<double, 3> Kp_pos = {40.0, 40.0, 60.0};
+// static constexpr std::array<double, 3> Ki_pos = {0.10, 0.10, 0.10};
+// static constexpr std::array<double, 3> Kd_pos = {8.0, 8.0, 30.0};
+static constexpr std::array<double, 3> Kp_pos = {60.0, 60.0, 60.0};
+static constexpr std::array<double, 3> Ki_pos = {0.50, 0.50, 0.10};
+static constexpr std::array<double, 3> Kd_pos = {10.0, 10.0, 30.0};
 
 static constexpr std::array<double, 3> pos_i_sat = {30.0, 30.0, 30.0};
 static constexpr std::array<double, 3> force_body_sat = {50.0, 50.0, 60.0};
@@ -43,28 +60,22 @@ static constexpr double ER_NORM_MAX = 1.5;
 static constexpr double disturbance_rms_tau = 1.0;
 
 // Saturatation parameters -----------------------------------------------
-static constexpr double f_min = 1.0e-3;
-static constexpr double f_cmd_min = 1.0e-6;
-static constexpr double f_cmd_max = 20.0;
-static constexpr double alpha_limit_rad = M_PI / 6.0;
-static constexpr double beta_limit_rad = M_PI;
-static constexpr double virtual_lambda = 1.0e-4;
+static constexpr double HB_F_CMD_MIN = 1.0e-6;
+static constexpr double HB_F_CMD_MAX = 20.0;
 
-// Augmented Differential Allocation ----------------------------------
-// (7), diag [Mx My Mz Fx Fy Fz]
-static constexpr std::array<double, 6> ada_kj_diag = {60.0, 60.0, 60.0, 25.0, 25.0, 25.0};
+static constexpr double HB_VIRTUAL_LAMBDA = 1.0e-4;
 
-// (5), diag [alpha1 alpha2 alpha3 alpha4 beta1 beta2 f1 f2 f3 f4]
-static constexpr std::array<double, 10> ada_W_inv_diag = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 3200.0, 3200.0, 3200.0, 3200.0};
+// Allocation parameters -----------------------------------------------
+inline const Eigen::DiagonalMatrix<double, 6> HB_KJ = [] {Eigen::DiagonalMatrix<double, 6> K; K.diagonal() << 60.0, 60.0, 60.0, 20.0, 20.0, 20.0; return K;}();
+inline const Eigen::DiagonalMatrix<double, 10> HB_W_INV = [] {Eigen::DiagonalMatrix<double, 10> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0, 10.0; return W;}();
+static constexpr std::array<double, 10> HB_QDOT_MAX = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 500.0, 500.0, 500.0, 500.0};
+static constexpr std::array<double, 3> HB_NULL_K = {1.0, 1.0, 1.0}; // [alpha, beta, thrust]
+static constexpr double HB_BETA_REF = 0.0;
 
-// (13), order [alpha_dot1 alpha_dot2 alpha_dot3 alpha_dot4 beta_dot1 beta_dot2 f_dot1 f_dot2 f_dot3 f_dot4]
-static constexpr std::array<double, 10> ada_q_dot_max = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 500.0, 500.0, 500.0, 500.0};
+inline const Eigen::DiagonalMatrix<double, 6> HEXA_KJ = HB_KJ;
+inline const Eigen::DiagonalMatrix<double, 12> HEXA_W_INV = [] {Eigen::DiagonalMatrix<double, 12> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0; return W;}();
+static constexpr std::array<double, 2> HEXA_NULL_K = {0.1, 0.1}; // [alpha, thrust]
+static constexpr double HEXA_RMS_ACTIVE = 0.05;
+static constexpr double HEXA_RMS_DECAY_TAU = 10.0; //form codex
 
-// Disturbance-dependent actuator weighting
-static constexpr double ada_weight_rms_active = 0.0;
-static constexpr double ada_weight_rms_full = 0.05;
-static constexpr double ada_W_inv_f_disturbed = 10000.0;
-
-static constexpr double check_force_tol = 1.00;
-static constexpr double check_moment_tol = 2.00;
 }
