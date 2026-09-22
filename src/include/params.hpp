@@ -25,8 +25,7 @@ static constexpr double HB_MASS = 3.50;
 static constexpr std::array<double, 3> HB_J = {0.030, 0.030, 0.050};
 static constexpr double HB_L = 0.175;
 static constexpr double HB_ZETA = 0.0500;
-static constexpr double HB_Q_CMD_TAU_SERVO = 0.05;
-static constexpr double HB_Q_CMD_TAU_THRUST = 0.01;
+static constexpr double HB_Q_CMD_TAU_SERVO = 0.20;
 static constexpr double HB_ALPHA_LIMIT_RAD = M_PI / 6.0;
 static constexpr double HB_BETA_LIMIT_RAD = M_PI;
 
@@ -36,12 +35,12 @@ static constexpr double HEXA_L = 0.300; //form codex
 static constexpr double HEXA_ZETA = HB_ZETA;
 
 // position controller -----------------------------------------------
-// static constexpr std::array<double, 3> Kp_pos = {40.0, 40.0, 60.0};
-// static constexpr std::array<double, 3> Ki_pos = {0.10, 0.10, 0.10};
-// static constexpr std::array<double, 3> Kd_pos = {8.0, 8.0, 30.0};
-static constexpr std::array<double, 3> Kp_pos = {60.0, 60.0, 60.0};
-static constexpr std::array<double, 3> Ki_pos = {0.50, 0.50, 0.10};
-static constexpr std::array<double, 3> Kd_pos = {10.0, 10.0, 30.0};
+static constexpr std::array<double, 3> Kp_pos = {40.0, 40.0, 60.0};
+static constexpr std::array<double, 3> Ki_pos = {0.10, 0.10, 0.10};
+static constexpr std::array<double, 3> Kd_pos = {12.0, 12.0, 30.0};
+// static constexpr std::array<double, 3> Kp_pos = {60.0, 60.0, 60.0};
+// static constexpr std::array<double, 3> Ki_pos = {0.50, 0.50, 0.10};
+// static constexpr std::array<double, 3> Kd_pos = {10.0, 10.0, 30.0};
 
 static constexpr std::array<double, 3> pos_i_sat = {30.0, 30.0, 30.0};
 static constexpr std::array<double, 3> force_body_sat = {50.0, 50.0, 60.0};
@@ -67,10 +66,10 @@ static constexpr double HB_VIRTUAL_LAMBDA = 1.0e-4;
 
 // Allocation parameters -----------------------------------------------
 inline const Eigen::DiagonalMatrix<double, 6> HB_KJ = [] {Eigen::DiagonalMatrix<double, 6> K; K.diagonal() << 60.0, 60.0, 60.0, 20.0, 20.0, 20.0; return K;}();
-inline const Eigen::DiagonalMatrix<double, 10> HB_W_INV = [] {Eigen::DiagonalMatrix<double, 10> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0, 10.0; return W;}();
+inline const Eigen::DiagonalMatrix<double, 10> HB_W_INV = [] {Eigen::DiagonalMatrix<double, 10> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 300.0, 300.0, 300.0, 300.0; return W;}();
 static constexpr std::array<double, 10> HB_QDOT_MAX = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 500.0, 500.0, 500.0, 500.0};
-static constexpr std::array<double, 3> HB_NULL_K = {1.0, 1.0, 1.0}; // [alpha, beta, thrust]
-static constexpr double HB_BETA_REF = 0.0;
+static constexpr std::array<double, 3> HB_NULL_K = {0.3, 0.3, 0.1}; // [alpha, beta, thrust]
+static constexpr double HB_BETA_REF = 20.0 * M_PI / 180.0; // [rad]
 
 inline const Eigen::DiagonalMatrix<double, 6> HEXA_KJ = HB_KJ;
 inline const Eigen::DiagonalMatrix<double, 12> HEXA_W_INV = [] {Eigen::DiagonalMatrix<double, 12> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0; return W;}();
@@ -79,3 +78,4 @@ static constexpr double HEXA_RMS_ACTIVE = 0.05;
 static constexpr double HEXA_RMS_DECAY_TAU = 10.0; //form codex
 
 }
+

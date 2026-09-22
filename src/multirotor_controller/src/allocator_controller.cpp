@@ -6,6 +6,7 @@
 #include <multirotor_interfaces/msg/wrench.hpp>
 
 #include <Eigen/Dense>
+#include <cmath>
 #include <functional>
 #include <stdexcept>
 
@@ -88,7 +89,6 @@ private:
 
     // const auto alloc = utils::allocation_a1b1(moment_cmd, force_cmd);
     const auto alloc = utils::allocation_a4b2(moment_cmd, force_cmd, beta_ref_, alpha_measured_, beta_measured_, servo_read_, dt);
-
     multirotor_interfaces::msg::Input out;
 
     out.f[0] = alloc.f(0);

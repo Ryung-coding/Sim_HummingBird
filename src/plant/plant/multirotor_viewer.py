@@ -7,6 +7,7 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from std_msgs.msg import Bool
 from multirotor_interfaces.msg import MultirotorState, Cmd, Wrench, Input, HexaInput
 
 from PyQt5 import QtCore, QtWidgets
@@ -160,8 +161,10 @@ class VNode(Node):
         self.max_att_err_time = 0.0
 
         self.buf_pos = Ring(MAX_SAMPLES, 4)
+        self.buf_vel = Ring(MAX_SAMPLES, 4)
         self.buf_cmd = Ring(MAX_SAMPLES, 4)
         self.buf_pos_err = Ring(MAX_SAMPLES, 4)
+        self.buf_disturbance = Ring(MAX_SAMPLES, 4)
 
         self.buf_rpy = Ring(MAX_SAMPLES, 4)
         self.buf_att = Ring(MAX_SAMPLES, 4)
@@ -185,6 +188,7 @@ class VNode(Node):
         self.create_subscription(MultirotorState, "/multirotor_state", self._cb_state, 10)
         self.create_subscription(Cmd, "/cmd", self._cb_cmd, 10)
         self.create_subscription(Wrench, "/wrench", self._cb_wrench, 10)
+        self.pub_impulse_trigger = self.create_publisher(Bool, "/test/impulse_trigger", 1)
         if self.is_hexa:
             self.create_subscription(HexaInput, "/hexa_input", self._cb_hexa_input, 10)
         else:
@@ -193,10 +197,21 @@ class VNode(Node):
     def _t(self):
         return self.get_clock().now().nanoseconds * 1e-9 - self.t0
 
+    def trigger_impulse(self):
+        msg = Bool()
+        msg.data = True
+        self.pub_impulse_trigger.publish(msg)
+
     def _cb_state(self, m):
         t = self._t()
 
         pos = np.array([m.pos[0], m.pos[1], m.pos[2]], dtype=float)
+        vel = np.array([m.vel[0], m.vel[1], m.vel[2]], dtype=float)
+        disturbance_force = np.array([
+            m.disturbance_force[0],
+            m.disturbance_force[1],
+            m.disturbance_force[2]
+        ], dtype=float)
         rpy_deg = np.array([m.rpy[0], m.rpy[1], m.rpy[2]], dtype=float) * RAD2DEG
         if self.is_hexa:
             hexa_alpha_deg = np.array(m.hexa_alpha[:6], dtype=float) * RAD2DEG
@@ -230,6 +245,8 @@ class VNode(Node):
                 self.max_att_err_time = t
 
             self.buf_pos.push([t, pos[0], pos[1], pos[2]])
+            self.buf_vel.push([t, vel[0], vel[1], vel[2]])
+            self.buf_disturbance.push([t, disturbance_force[0], disturbance_force[1], disturbance_force[2]])
             self.buf_rpy.push([t, rpy_deg[0], rpy_deg[1], rpy_deg[2]])
             if self.is_hexa:
                 self.buf_hexa_alpha.push([t, *hexa_alpha_deg])
@@ -339,10 +356,26 @@ class Win(QtWidgets.QMainWindow):
         self.nullspace_glw = pg.GraphicsLayoutWidget()
         self.disturbance_glw = pg.GraphicsLayoutWidget()
         self.act_glw = pg.GraphicsLayoutWidget()
+        self.disturbance_tab = QtWidgets.QWidget()
+        disturbance_layout = QtWidgets.QVBoxLayout(self.disturbance_tab)
+        disturbance_controls = QtWidgets.QHBoxLayout()
+        self.impulse_button = QtWidgets.QPushButton("Trigger X impulse")
+        self.impulse_button.clicked.connect(self._trigger_impulse)
+        self.impulse_status = QtWidgets.QLabel("manual trigger ready")
+        disturbance_controls.addWidget(self.impulse_button)
+        disturbance_controls.addWidget(self.impulse_status)
+        disturbance_controls.addStretch()
+        self.performance_label = QtWidgets.QLabel(
+            f"<b>Rolling {WINDOW_SEC:.0f} s performance</b>: waiting for state data..."
+        )
+        self.performance_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        disturbance_layout.addLayout(disturbance_controls)
+        disturbance_layout.addWidget(self.performance_label)
+        disturbance_layout.addWidget(self.disturbance_glw, 1)
 
         tabs.addTab(self.state_glw, "State")
         tabs.addTab(self.nullspace_glw, "Tilt Direction" if self.is_hexa else "Nullspace XY")
-        tabs.addTab(self.disturbance_glw, "Disturbance RMS")
+        tabs.addTab(self.disturbance_tab, "Disturbance / Performance")
         tabs.addTab(self.act_glw, "Actuator")
 
         self._build_state_tab()
@@ -359,6 +392,10 @@ class Win(QtWidgets.QMainWindow):
         self._timer = QtCore.QTimer()
         self._timer.timeout.connect(self._upd)
         self._timer.start(UPDATE_MS)
+
+    def _trigger_impulse(self):
+        self.node.trigger_impulse()
+        self.impulse_status.setText("manual trigger published")
 
     def _build_state_tab(self):
         pos_lbl = ["x", "y", "z"]
@@ -655,10 +692,22 @@ class Win(QtWidgets.QMainWindow):
             )
             self._plots_disturbance.append(p)
 
+        p_xerr = _mkplot(self.disturbance_glw, 2, 0, "x position error", "x error [m]")
+        self._cv["perf_xerr"] = p_xerr.plot(pen=_pen(C_R), name="x_cmd - x")
+        self._plots_disturbance.append(p_xerr)
+
+        p_vx = _mkplot(self.disturbance_glw, 2, 1, "x velocity", "vx [m/s]")
+        self._cv["perf_vx"] = p_vx.plot(pen=_pen(C_G), name="vx")
+        self._plots_disturbance.append(p_vx)
+
+        p_fx = _mkplot(self.disturbance_glw, 2, 2, "Applied X impulse", "external Fx [N]")
+        self._cv["perf_fx"] = p_fx.plot(pen=_pen(C_O), name="external Fx")
+        self._plots_disturbance.append(p_fx)
+
         for p in self._plots_disturbance[1:]:
             p.setXLink(self._plots_disturbance[0])
 
-        for p in self._plots_disturbance[:3]:
+        for p in self._plots_disturbance[:-3]:
             p.hideAxis("bottom")
 
         for p in self._plots_disturbance[-3:]:
@@ -900,13 +949,55 @@ class Win(QtWidgets.QMainWindow):
             "</div>"
         )
 
+    def _update_performance_label(self, dpe, dv, dae, dext, dth, dph, df, dha, dhf):
+        if not dpe.shape[0]:
+            return
+
+        def rms(x):
+            return float(np.sqrt(np.mean(np.square(x)))) if x.size else float("nan")
+
+        x_error = dpe[:, 1]
+        z_error = dpe[:, 3]
+        vx = dv[:, 1] if dv.shape[0] else np.empty(0)
+        roll_error = dae[:, 1] if dae.shape[0] else np.empty(0)
+        pitch_error = dae[:, 2] if dae.shape[0] else np.empty(0)
+        fx = dext[:, 1] if dext.shape[0] else np.empty(0)
+
+        if self.is_hexa:
+            tilt_peak = np.max(np.abs(dha[:, 1:7])) if dha.shape[0] else float("nan")
+            force_spread_rms = rms(np.ptp(dhf[:, 1:7], axis=1)) if dhf.shape[0] else float("nan")
+            actuator_text = (
+                f"alpha peak = {tilt_peak:.1f} deg&nbsp;&nbsp; "
+                f"force spread RMS = {force_spread_rms:.2f} N"
+            )
+        else:
+            beta_peak = np.max(np.abs(dth[:, 1:3])) if dth.shape[0] else float("nan")
+            alpha_peak = np.max(np.abs(dph[:, 1:5])) if dph.shape[0] else float("nan")
+            force_spread_rms = rms(np.ptp(df[:, 1:5], axis=1)) if df.shape[0] else float("nan")
+            actuator_text = (
+                f"beta peak = {beta_peak:.1f} deg&nbsp;&nbsp; alpha peak = {alpha_peak:.1f} deg&nbsp;&nbsp; "
+                f"force spread RMS = {force_spread_rms:.2f} N"
+            )
+
+        fx_rms = rms(fx)
+        fx_peak = np.max(np.abs(fx)) if fx.size else float("nan")
+        self.performance_label.setText(
+            f"<b>Rolling {WINDOW_SEC:.0f} s performance</b> (lower error/RMS is better)&nbsp;&nbsp; "
+            f"x error RMS / peak = {rms(x_error):.4f} / {np.max(np.abs(x_error)):.4f} m&nbsp;&nbsp; "
+            f"vx RMS = {rms(vx):.4f} m/s&nbsp;&nbsp; z error RMS = {rms(z_error):.4f} m<br>"
+            f"roll / pitch error RMS = {rms(roll_error):.2f} / {rms(pitch_error):.2f} deg&nbsp;&nbsp; "
+            f"external Fx RMS / peak = {fx_rms:.2f} / {fx_peak:.2f} N&nbsp;&nbsp; {actuator_text}"
+        )
+
     def _upd(self):
         nd = self.node
 
         with nd.lock:
             dp = nd.buf_pos.get()
+            dv = nd.buf_vel.get()
             dc = nd.buf_cmd.get()
             dpe = nd.buf_pos_err.get()
+            dext = nd.buf_disturbance.get()
             dr = nd.buf_rpy.get()
             da = nd.buf_att.get()
             dae = nd.buf_att_err.get()
@@ -922,7 +1013,7 @@ class Win(QtWidgets.QMainWindow):
             dhf = nd.buf_hexa_thr.get()
 
         tn = 0.0
-        for d in (dp, dc, dpe, dr, da, dae, dw, dd, dth, dph, dthc, dphc, df, dha, dhac, dhf):
+        for d in (dp, dv, dc, dpe, dext, dr, da, dae, dw, dd, dth, dph, dthc, dphc, df, dha, dhac, dhf):
             if d.shape[0]:
                 tn = max(tn, d[-1, 0])
 
@@ -935,8 +1026,10 @@ class Win(QtWidgets.QMainWindow):
             return a[a[:, 0] >= tl] if a.shape[0] else a
 
         dp = tr(dp)
+        dv = tr(dv)
         dc = tr(dc)
         dpe = tr(dpe)
+        dext = tr(dext)
         dr = tr(dr)
         da = tr(da)
         dae = tr(dae)
@@ -962,6 +1055,11 @@ class Win(QtWidgets.QMainWindow):
         if dpe.shape[0]:
             for i in range(3):
                 cv[f"perr{i}"].setData(dpe[:, 0], dpe[:, 1 + i])
+            cv["perf_xerr"].setData(dpe[:, 0], dpe[:, 1])
+        if dv.shape[0]:
+            cv["perf_vx"].setData(dv[:, 0], dv[:, 1])
+        if dext.shape[0]:
+            cv["perf_fx"].setData(dext[:, 0], dext[:, 1])
 
         if dw.shape[0]:
             for i in range(3):
@@ -1043,6 +1141,7 @@ class Win(QtWidgets.QMainWindow):
             self._update_xy_vectors(dphc, dthc, self._xy_cmd)
             self._update_nullspace_label(dd, dw, dph, dth, dphc, dthc)
 
+        self._update_performance_label(dpe, dv, dae, dext, dth, dph, df, dha, dhf)
         self._update_max_label()
 
         if self._plots_state:

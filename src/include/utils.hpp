@@ -48,6 +48,8 @@ struct AllocationOutput {
   Eigen::Vector4d f = Eigen::Vector4d::Zero();
   Eigen::Vector2d beta = Eigen::Vector2d::Zero();
   Eigen::Vector4d alpha = Eigen::Vector4d::Zero();
+  double primary_scale = 1.0;
+  double nullspace_scale = 1.0;
 };
 
 struct HexaAllocationOutput {
@@ -598,6 +600,43 @@ inline TargetCMD circularWallPath(double t)
   return cmd;
 }
 
+inline TargetCMD stepPath(double t)
+{
+  static constexpr double HOVER_SEC = 3.0;
+  static constexpr double HOLD_SEC  = 3.0;
+
+  static constexpr double X_delta = 0.5;
+  static constexpr double Z = 1.0;
+
+  TargetCMD cmd;
+
+  if (t < HOVER_SEC) 
+  {
+    const double a = t / HOVER_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.x = 0.0;
+    cmd.y = 0.0;
+    cmd.z = Z * s;
+
+    cmd.roll  = 0.0;
+    cmd.pitch = 0.0;
+    cmd.yaw   = 0.0;
+
+    return cmd;
+  }
+
+  cmd.x = t - HOVER_SEC < HOLD_SEC ? X_delta : 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+
+  cmd.roll  = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw   = 0.0;
+
+  return cmd;
+}
+
 // Control Allocation utils ===========================================
 inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
 {
@@ -648,7 +687,7 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector2d& beta_ref, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, [[maybe_unused]] double dt)
+inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector2d& beta_ref, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
   using Vector10d = Eigen::Matrix<double, 10, 1>;
@@ -663,7 +702,7 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   if (!initialized)
   {
     previous_cmd.alpha = alpha_measured;
-    previous_cmd.beta = beta_measured;
+    previous_cmd.beta = beta_ref;
     previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX));
     initialized = true;
   }
@@ -752,28 +791,80 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   for (int i = 6; i < 10; ++i) q_dot_star(i) = params::HB_NULL_K[2] * (force_cmd.norm() / 4.0 - q(i));
 
   // q_dot = J^# W_dot_des + (I - J^# J) q_dot_star
-  Vector10d q_dot = J_pesudo * W_dot_des + (Matrix1010d::Identity() - J_pesudo * J) * q_dot_star;
+  const Vector10d q_dot_primary = J_pesudo * W_dot_des;
 
-  // (13) sat(q_dot) = k_s q_dot
-  double k_s = 1.0;
-  for (int i = 0; i < 10; ++i) if (std::abs(q_dot(i)) > params::HB_QDOT_MAX[i]) k_s = std::min(k_s, params::HB_QDOT_MAX[i] / std::abs(q_dot(i)));
-  q_dot *= k_s;
+  const Vector10d q_dot_nullspace = (Matrix1010d::Identity() - J_pesudo * J) * q_dot_star;
 
-  // Simple integration: q_cmd,k+1 = q_cmd,k + dt q_dot,k
-  // Vector10d q_cmd_prev = q;
-  // q_cmd_prev.segment<4>(0) = previous_cmd.alpha;
-  // q_cmd_prev.segment<2>(4) = previous_cmd.beta;
-  // const Vector10d q_cmd = q_cmd_prev + std::max(dt, 0.0) * q_dot;
+  Vector10d q_dot_max;
+  for (int i = 0; i < 4; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
+  for (int i = 4; i < 6; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
+  for (int i = 6; i < 10; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
 
-  // (14) q_dot = K(q_cmd - q), q_cmd = q + K^-1 q_dot
+  const auto nullspace_interval = [&](double primary_scale, double& lower, double& upper)
+  {
+    lower = 0.0;
+    upper = 1.0;
+
+    for (int i = 0; i < 10; ++i)
+    {
+      const double primary_rate = primary_scale * q_dot_primary(i);
+      if (std::abs(q_dot_nullspace(i)) < 1.0e-12)
+      {
+        if (std::abs(primary_rate) > q_dot_max(i) + 1.0e-12) return false;
+        continue;
+      }
+
+      double bound_1 = (-q_dot_max(i) - primary_rate) / q_dot_nullspace(i);
+      double bound_2 = ( q_dot_max(i) - primary_rate) / q_dot_nullspace(i);
+      if (bound_1 > bound_2) std::swap(bound_1, bound_2);
+
+      lower = std::max(lower, bound_1);
+      upper = std::min(upper, bound_2);
+      if (lower > upper + 1.0e-12) return false;
+    }
+
+    return true;
+  };
+
+  double primary_scale = 1.0;
+  double nullspace_lower = 0.0;
+  double nullspace_upper = 1.0;
+  if (!nullspace_interval(primary_scale, nullspace_lower, nullspace_upper))
+  {
+    double feasible_scale = 0.0;
+    double infeasible_scale = 1.0;
+    for (int iteration = 0; iteration < 40; ++iteration)
+    {
+      const double candidate = 0.5 * (feasible_scale + infeasible_scale);
+      double candidate_lower = 0.0;
+      double candidate_upper = 1.0;
+      if (nullspace_interval(candidate, candidate_lower, candidate_upper))
+      {
+        feasible_scale = candidate;
+      }
+      else
+      {
+        infeasible_scale = candidate;
+      }
+    }
+
+    primary_scale = feasible_scale;
+    nullspace_interval(primary_scale, nullspace_lower, nullspace_upper);
+  }
+
+  const double nullspace_scale = std::clamp(nullspace_upper, 0.0, 1.0);
+  const Vector10d q_dot = primary_scale * q_dot_primary + nullspace_scale * q_dot_nullspace;
+
   Vector10d q_cmd;
   for (int i = 0; i < 6; ++i) q_cmd(i) = q(i) + params::HB_Q_CMD_TAU_SERVO * q_dot(i);
-  for (int i = 6; i < 10; ++i) q_cmd(i) = q(i) + params::HB_Q_CMD_TAU_THRUST * q_dot(i);
+  for (int i = 6; i < 10; ++i) q_cmd(i) = q(i) + std::max(dt, 1.0e-6) * q_dot(i);
 
   AllocationOutput out;
   for (int i = 0; i < 4; ++i) out.alpha(i) = std::clamp(q_cmd(i), -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
   for (int i = 0; i < 2; ++i) out.beta(i) = std::clamp(q_cmd(4 + i), -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
   for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(q_cmd(6 + i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
+  out.primary_scale = primary_scale;
+  out.nullspace_scale = nullspace_scale;
 
   previous_cmd = out;
   return out;

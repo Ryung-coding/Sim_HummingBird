@@ -23,6 +23,11 @@ from multirotor_interfaces.msg import HexaInput, Input, MultirotorState
 # control rate and physics rate
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
+HB_SERVO_TAU_SEC = 0.2
+
+# Servo start offset [deg]
+# order: [alpha1, alpha2, alpha3, alpha4, beta1, beta2]
+HB_SERVO_OFFSET_DEG = np.array([0.0, 0.0, 0.0, 0.0, -0.0, 0.0], dtype=float)
 
 # Sensor noise standard deviations
 USE_NOISE = False
@@ -45,11 +50,12 @@ HEXA_N_CTRL = HEXA_N_ALPHA + 2 * HEXA_N_THRUST
 # Visualization parameters
 USE_FIXED_CAMERA = False
 SHOW_THRUST_ARROWS = True
-USE_LIDAR = False
-SHOW_LIDAR_RAYS = False
+SHOW_PLANNING_PATH = True
+USE_LIDAR = True
+SHOW_LIDAR_RAYS = True
 USE_WIND = False
-USE_RANDOM_DISTURBANCE = True
-USE_X_IMPULSE = False
+USE_RANDOM_DISTURBANCE = False
+USE_X_IMPULSE = True
 
 VIEW_CAMERA_NAME = "front_camera"
     
@@ -96,8 +102,30 @@ RANDOM_DISTURBANCE_TIME_CONSTANT = 0.2
 RANDOM_DISTURBANCE_SEED = 20260916
 
 IMPULSE_DIRECTION_ZDOWN = np.array([1.0, 0.0, 0.0], dtype=float)
-IMPULSE_FORCE_N = 3.0
-IMPULSE_DURATION_SEC = 0.2
+IMPULSE_FORCE_N = 10.0
+IMPULSE_DURATION_SEC = 0.1
+
+
+class LPF:
+    """First-order low-pass filter: y_dot = (x - y) / tau."""
+
+    def __init__(self, tau_sec, dt_sec, initial):
+        self.tau_sec = max(float(tau_sec), 0.0)
+        self.dt_sec = max(float(dt_sec), 1.0e-9)
+        self.alpha = (
+            1.0
+            if self.tau_sec <= 1.0e-9
+            else 1.0 - math.exp(-self.dt_sec / self.tau_sec)
+        )
+        self.y = np.asarray(initial, dtype=float).copy()
+
+    def update(self, x):
+        x = np.asarray(x, dtype=float)
+        self.y += self.alpha * (x - self.y)
+        return self.y.copy()
+
+    def reset(self, x):
+        self.y = np.asarray(x, dtype=float).copy()
 
 
 def to_zdown(v):
@@ -183,7 +211,6 @@ class PlantRosNode(Node):
             raise ValueError(f"vehicle must be hummingbird or hexa, got {self.vehicle}")
         if self.mode not in ("position_cmd", "planning"):
             raise ValueError(f"mode must be position_cmd or planning, got {self.mode}")
-
         pkg_share = get_package_share_directory("plant")
         xml_path = (
             os.path.join(pkg_share, "xml", "HEXA_scene.xml")
@@ -199,6 +226,7 @@ class PlantRosNode(Node):
         self.data = mujoco.MjData(self.model)
         self.model.opt.timestep = 1.0 / PHYSICS_HZ
         self.set_planning_obstacles_enabled()
+        self.set_hb_servo_offset()
         mujoco.mj_forward(self.model, self.data)
 
         if self.model.nu != self.n_ctrl:
@@ -277,6 +305,30 @@ class PlantRosNode(Node):
         self.ctrl_recv = np.zeros(self.n_ctrl, dtype=float)
         self.ctrl = np.zeros(self.n_ctrl, dtype=float)
 
+        if not self.is_hexa:
+            servo_offset_rad = np.deg2rad(HB_SERVO_OFFSET_DEG)
+            alpha_offset = servo_offset_rad[0:4]
+            beta_offset = servo_offset_rad[4:6]
+            beta_actuators = np.array(
+                [beta_offset[0], beta_offset[1], beta_offset[1], beta_offset[0]],
+                dtype=float
+            )
+
+            self.ctrl_recv[HB_N_THRUST:HB_N_THRUST + 4] = beta_actuators
+            self.ctrl_recv[HB_N_THRUST + 4:HB_N_CTRL] = alpha_offset
+
+            self.ctrl[HB_N_THRUST:HB_N_THRUST + 4] = beta_actuators
+            self.ctrl[HB_N_THRUST + 4:HB_N_CTRL] = alpha_offset
+            self.data.ctrl[:HB_N_CTRL] = self.ctrl[:HB_N_CTRL]
+
+        self.hb_servo_lpf = None
+        if not self.is_hexa:
+            self.hb_servo_lpf = LPF(
+                tau_sec=HB_SERVO_TAU_SEC,
+                dt_sec=1.0 / PHYSICS_HZ,
+                initial=self.ctrl[HB_N_THRUST:HB_N_CTRL],
+            )
+
         self.prev_pub_t = None
         self.prev_linvel_zdown = None
         self.prev_gyro = None
@@ -321,6 +373,41 @@ class PlantRosNode(Node):
             self.get_logger().info("input order: alpha[6], then rotor_0..11 thrust; each f[i] is split across rotor_i and rotor_i+6")
         else:
             self.get_logger().info("input order: f[4], beta[2] expanded to ctrl[4:8], alpha[4] -> ctrl[0:4], ctrl[4:8], ctrl[8:12]")
+
+    def set_hb_servo_offset(self):
+        if self.is_hexa:
+            return
+
+        if HB_SERVO_OFFSET_DEG.shape != (6,):
+            raise ValueError(
+                "HB_SERVO_OFFSET_DEG must be "
+                "[alpha1, alpha2, alpha3, alpha4, beta1, beta2]"
+            )
+
+        servo_offset_rad = np.deg2rad(HB_SERVO_OFFSET_DEG)
+        alpha_offset = servo_offset_rad[0:4]
+        beta_offset = servo_offset_rad[4:6]
+
+        joint_values = {
+            "joint_alpha1": alpha_offset[0],
+            "joint_alpha2": alpha_offset[1],
+            "joint_alpha3": alpha_offset[2],
+            "joint_alpha4": alpha_offset[3],
+            "joint_beta1": beta_offset[0],
+            "joint_beta2": beta_offset[1],
+            "joint_beta3": beta_offset[1],
+            "joint_beta4": beta_offset[0],
+        }
+
+        for joint_name, value in joint_values.items():
+            joint_id = mujoco.mj_name2id(
+                self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+
+            if joint_id < 0:
+                raise RuntimeError(f"joint not found: {joint_name}")
+
+            self.data.qpos[self.model.jnt_qposadr[joint_id]] = value
 
     def set_planning_obstacles_enabled(self):
         """Enable physical planning obstacles only for mode:=planning."""
@@ -522,11 +609,10 @@ class PlantRosNode(Node):
             return
 
         with self.lock:
-            if self.impulse_end_time is None or self.data.time >= self.impulse_end_time:
-                self.impulse_end_time = self.data.time + IMPULSE_DURATION_SEC
-                self.get_logger().info(
-                    f"impulse triggered at sim t={self.data.time:.3f} s"
-                )
+            self.impulse_end_time = self.data.time + IMPULSE_DURATION_SEC
+            self.get_logger().info(
+                f"impulse triggered at sim t={self.data.time:.3f} s"
+            )
 
     def apply_x_impulse(self):
         if self.impulse_end_time is None or self.data.time >= self.impulse_end_time:
@@ -575,6 +661,17 @@ class PlantRosNode(Node):
             self.ctrl_recv[HEXA_N_ALPHA:HEXA_N_CTRL] = np.concatenate((0.5 * f, 0.5 * f))
 
     def apply_control(self):
+        if self.is_hexa:
+            self.ctrl = self.ctrl_recv.copy()
+        else:
+            # BLDC thrust is applied directly.
+            self.ctrl[0:HB_N_THRUST] = self.ctrl_recv[0:HB_N_THRUST]
+
+            # Servo commands [beta1..4, alpha1..4] follow a first-order lag.
+            self.ctrl[HB_N_THRUST:HB_N_CTRL] = self.hb_servo_lpf.update(
+                self.ctrl_recv[HB_N_THRUST:HB_N_CTRL]
+            )
+
         self.data.ctrl[:self.n_ctrl] = self.ctrl[:self.n_ctrl]
 
     def make_state_msg(self, now):
@@ -661,10 +758,8 @@ class PlantRosNode(Node):
             now = time.perf_counter()
 
             with self.lock:
-                self.ctrl = self.ctrl_recv.copy()
-                self.apply_control()
-
                 while now >= next_step:
+                    self.apply_control()
                     self.data.xfrc_applied[self.bid_body, :] = 0.0
                     self.lidar_ranges = self.read_lidar_ranges()
                     self.apply_wall_airflow()
