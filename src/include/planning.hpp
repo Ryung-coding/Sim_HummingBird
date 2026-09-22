@@ -203,6 +203,8 @@ struct MinimumSnapSegment
   Eigen::Vector3d p0{Eigen::Vector3d::Zero()};
   Eigen::Vector3d p1{Eigen::Vector3d::Zero()};
   double duration{0.0};
+  double pitch0{0.0};
+  double pitch1{0.0};
 
   utils::TargetCMD sample(double t) const
   {
@@ -213,16 +215,21 @@ struct MinimumSnapSegment
       + 420.0 * std::pow(s, 5) - 140.0 * std::pow(s, 6)) / duration;
 
     const Eigen::Vector3d position = p0 + blend * (p1 - p0);
-    Eigen::Vector2d tangent = (blend_dot * (p1 - p0)).head<2>();
+    Eigen::Vector3d tangent = blend_dot * (p1 - p0);
     if (tangent.norm() < 1.0e-6) {
-      tangent = (p1 - p0).head<2>();
+      tangent = p1 - p0;
     }
 
     utils::TargetCMD cmd;
     cmd.x = position(0);
     cmd.y = position(1);
     cmd.z = position(2);
-    cmd.yaw = tangent.norm() > 1.0e-6 ? std::atan2(tangent(1), tangent(0)) : 0.0;
+
+    const double horizontal = std::hypot(tangent(0), tangent(1));
+    cmd.roll = 0.0;
+    cmd.pitch = pitch0 + blend * (pitch1 - pitch0);
+    cmd.yaw = horizontal > 1.0e-6 ? std::atan2(tangent(1), tangent(0)) : 0.0;
+
     return cmd;
   }
 };

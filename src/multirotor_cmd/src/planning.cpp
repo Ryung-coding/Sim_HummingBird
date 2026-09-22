@@ -100,12 +100,14 @@ private:
       return;
     }
 
-    const Eigen::Vector2d start_xy = plannedStart().head<2>();
-    const Eigen::Vector2d goal_xy = utils::vec3(params::PLANNING_GOAL).head<2>();
+    const Eigen::Vector3d start = plannedStart();
+    const Eigen::Vector3d goal = utils::vec3(params::PLANNING_GOAL);
+    const Eigen::Vector2d start_xz(start(0), start(2));
+    const Eigen::Vector2d goal_xz(goal(0), goal(2));
     Eigen::Vector2i start_ij;
     Eigen::Vector2i goal_ij;
 
-    if (!ogm_.worldToGrid(start_xy, start_ij) || !ogm_.worldToGrid(goal_xy, goal_ij)) {
+    if (!ogm_.worldToGrid(start_xz, start_ij) || !ogm_.worldToGrid(goal_xz, goal_ij)) {
       RCLCPP_ERROR(get_logger(), "planning start or goal is outside /planning/ogm");
       return;
     }
@@ -120,13 +122,14 @@ private:
     std::vector<Eigen::Vector3d> waypoints;
     waypoints.reserve(essential_ij.size());
     for (const auto& ij : essential_ij) {
-      const Eigen::Vector2d xy = ogm_.gridToWorld(ij);
-      waypoints.emplace_back(xy(0), xy(1), params::PLANNING_GOAL[2]);
+      const Eigen::Vector2d xz = ogm_.gridToWorld(ij);
+      waypoints.emplace_back(xz(0), 0.0, xz(1));
     }
 
     // Start sigma = [x, y, z, psi]^T at the settled hover point (paper Eq. (3));
     // all later sigma positions lie on the A* route.
-    waypoints.front() = plannedStart();
+    waypoints.front() = start;
+    waypoints.back() = goal;
     trajectory_ = planning::makeMinimumSnapTrajectory(waypoints);
     have_trajectory_ = trajectory_.valid();
     trajectory_start_ = std::chrono::steady_clock::now();
@@ -190,17 +193,14 @@ private:
     msg.pos_cmd[1] = static_cast<float>(target.y);
     msg.pos_cmd[2] = static_cast<float>(target.z);
 
-    // With b_3,d = [0, 0, 1]^T (controller z-down), b_1,d is the horizontal
-    // minimum-snap tangent. Thus the body keeps looking down while heading
-    // follows the path. psi is the fourth flat output in paper Eq. (3).
     if constexpr (params::USE_SO3_HEADING_CMD) {
       msg.att_cmd[0] = static_cast<float>(std::cos(target.yaw));
       msg.att_cmd[1] = static_cast<float>(std::sin(target.yaw));
       msg.att_cmd[2] = 0.0F;
     }
     else {
-      msg.att_cmd[0] = 0.0F;
-      msg.att_cmd[1] = 0.0F;
+      msg.att_cmd[0] = static_cast<float>(target.roll);
+      msg.att_cmd[1] = static_cast<float>(target.pitch);
       msg.att_cmd[2] = static_cast<float>(target.yaw);
     }
 

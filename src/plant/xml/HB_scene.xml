@@ -24,6 +24,24 @@
     <texture type="2d" name="forest_ground_tex" builtin="checker" mark="edge" rgb1="0.15 0.15 0.17" rgb2="0.1 0.1 0.1" markrgb="0.3 0.3 0.3" width="100" height="100"/>
 
     <material name="forest_ground" texture="forest_ground_tex" texuniform="true" texrepeat="2 2" reflectance="0"/>
+
+    <material name="duct_material" rgba="0.43 0.47 0.52 1.0" specular="0.25" shininess="0.35" reflectance="0.05"/>
+    <material name="duct_transparent_material" rgba="0.22 0.50 0.72 0.24" specular="0.18" shininess="0.25"/>
+
+    <mesh name="duct_lower_left_mesh" vertex="0.350000 0.500000 0.500000 0.350000 0.660000 0.500000 0.350000 0.660000 1.500000 0.350000 0.500000 1.500000 1.707107 0.500000 0.500000 1.707107 0.660000 0.500000 1.292893 0.660000 1.500000 1.292893 0.500000 1.500000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_lower_right_mesh" vertex="0.350000 -0.660000 0.500000 0.350000 -0.500000 0.500000 0.350000 -0.500000 1.500000 0.350000 -0.660000 1.500000 1.707107 -0.660000 0.500000 1.707107 -0.500000 0.500000 1.292893 -0.500000 1.500000 1.292893 -0.660000 1.500000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_lower_top_mesh" vertex="0.350000 -0.660000 1.500000 0.350000 0.660000 1.500000 0.350000 0.660000 1.660000 0.350000 -0.660000 1.660000 1.292893 -0.660000 1.500000 1.292893 0.660000 1.500000 1.226619 0.660000 1.660000 1.226619 -0.660000 1.660000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_lower_bottom_mesh" vertex="0.350000 -0.660000 0.340000 0.350000 0.660000 0.340000 0.350000 0.660000 0.500000 0.350000 -0.660000 0.500000 1.773381 -0.660000 0.340000 1.773381 0.660000 0.340000 1.707107 0.660000 0.500000 1.707107 -0.660000 0.500000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+
+    <mesh name="duct_slope_left_mesh" vertex="1.707107 0.500000 0.500000 1.707107 0.660000 0.500000 1.292893 0.660000 1.500000 1.292893 0.500000 1.500000 3.207107 0.500000 2.000000 3.207107 0.660000 2.000000 2.792893 0.660000 3.000000 2.792893 0.500000 3.000000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_slope_right_mesh" vertex="1.707107 -0.660000 0.500000 1.707107 -0.500000 0.500000 1.292893 -0.500000 1.500000 1.292893 -0.660000 1.500000 3.207107 -0.660000 2.000000 3.207107 -0.500000 2.000000 2.792893 -0.500000 3.000000 2.792893 -0.660000 3.000000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_slope_top_mesh" vertex="1.292893 -0.660000 1.500000 1.292893 0.660000 1.500000 1.226619 0.660000 1.660000 1.226619 -0.660000 1.660000 2.792893 -0.660000 3.000000 2.792893 0.660000 3.000000 2.726619 0.660000 3.160000 2.726619 -0.660000 3.160000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_slope_bottom_mesh" vertex="1.773381 -0.660000 0.340000 1.773381 0.660000 0.340000 1.707107 0.660000 0.500000 1.707107 -0.660000 0.500000 3.273381 -0.660000 1.840000 3.273381 0.660000 1.840000 3.207107 0.660000 2.000000 3.207107 -0.660000 2.000000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+
+    <mesh name="duct_upper_left_mesh" vertex="3.207107 0.500000 2.000000 3.207107 0.660000 2.000000 2.792893 0.660000 3.000000 2.792893 0.500000 3.000000 3.700000 0.500000 2.000000 3.700000 0.660000 2.000000 3.700000 0.660000 3.000000 3.700000 0.500000 3.000000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_upper_right_mesh" vertex="3.207107 -0.660000 2.000000 3.207107 -0.500000 2.000000 2.792893 -0.500000 3.000000 2.792893 -0.660000 3.000000 3.700000 -0.660000 2.000000 3.700000 -0.500000 2.000000 3.700000 -0.500000 3.000000 3.700000 -0.660000 3.000000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_upper_top_mesh" vertex="2.792893 -0.660000 3.000000 2.792893 0.660000 3.000000 2.726619 0.660000 3.160000 2.726619 -0.660000 3.160000 3.700000 -0.660000 3.000000 3.700000 0.660000 3.000000 3.700000 0.660000 3.160000 3.700000 -0.660000 3.160000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
+    <mesh name="duct_upper_bottom_mesh" vertex="3.273381 -0.660000 1.840000 3.273381 0.660000 1.840000 3.207107 0.660000 2.000000 3.207107 -0.660000 2.000000 3.700000 -0.660000 1.840000 3.700000 0.660000 1.840000 3.700000 0.660000 2.000000 3.700000 -0.660000 2.000000" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0"/>
   </asset>
 
   <worldbody>
@@ -33,11 +51,23 @@
     <camera name="overview_camera" pos="2.5 -8.0 5.0" xyaxes="1 0 0 0 0.35 0.94" fovy="48"/>
 
     <geom name="floor" size="0 0 0.05" type="plane" material="forest_ground" contype="1" conaffinity="2" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
-    <!-- Named collision geoms are discovered by plant.py to build /planning/ogm. -->
-    <geom name="obstacle_pillar_0" type="cylinder" pos="0.90 0.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
-    <geom name="obstacle_pillar_1" type="cylinder" pos="1.70 -1.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
-    <geom name="obstacle_pillar_2" type="cylinder" pos="1.70 1.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
-    <geom name="obstacle_pillar_3" type="cylinder" pos="2.45 0.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+
+    <!-- Named collision geoms are discovered by plant.py. -->
+
+    <geom name="obstacle_duct_lower_left" class="duct_wall" type="mesh" mesh="duct_lower_left_mesh" material="duct_material"/>
+    <geom name="obstacle_duct_lower_right" class="duct_wall" type="mesh" mesh="duct_lower_right_mesh" material="duct_transparent_material"/>
+    <geom name="obstacle_duct_lower_top" class="duct_wall" type="mesh" mesh="duct_lower_top_mesh" material="duct_material"/>
+    <geom name="obstacle_duct_lower_bottom" class="duct_wall" type="mesh" mesh="duct_lower_bottom_mesh" material="duct_material"/>
+
+    <geom name="obstacle_duct_slope_left" class="duct_wall" type="mesh" mesh="duct_slope_left_mesh" material="duct_material"/>
+    <geom name="obstacle_duct_slope_right" class="duct_wall" type="mesh" mesh="duct_slope_right_mesh" material="duct_transparent_material"/>
+    <geom name="obstacle_duct_slope_top" class="duct_wall" type="mesh" mesh="duct_slope_top_mesh" material="duct_material"/>
+    <geom name="obstacle_duct_slope_bottom" class="duct_wall" type="mesh" mesh="duct_slope_bottom_mesh" material="duct_material"/>
+
+    <geom name="obstacle_duct_upper_left" class="duct_wall" type="mesh" mesh="duct_upper_left_mesh" material="duct_material"/>
+    <geom name="obstacle_duct_upper_right" class="duct_wall" type="mesh" mesh="duct_upper_right_mesh" material="duct_transparent_material"/>
+    <geom name="obstacle_duct_upper_top" class="duct_wall" type="mesh" mesh="duct_upper_top_mesh" material="duct_material"/>
+    <geom name="obstacle_duct_upper_bottom" class="duct_wall" type="mesh" mesh="duct_upper_bottom_mesh" material="duct_material"/>
 
   </worldbody>
 </mujoco>

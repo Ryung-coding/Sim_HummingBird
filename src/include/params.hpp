@@ -11,12 +11,12 @@ static constexpr bool USE_SO3_HEADING_CMD = false;
 static constexpr int RATE_HZ = 400;
 
 // Task parameters-----------------------------------------------
-static constexpr std::array<double, 3> PLANNING_START = {0.00, 0.00, -1.20};
+static constexpr std::array<double, 3> PLANNING_START = {0.00, 0.00, -1.00};
 static constexpr double PLANNING_START_TOLERANCE = 0.12;
 static constexpr double PLANNING_START_HOLD_SEC = 1.00;
 
-static constexpr std::array<double, 3> PLANNING_GOAL = {3.40, 0.00, -1.20};
-static constexpr double PLANNING_AVG_SPEED = 0.50;
+static constexpr std::array<double, 3> PLANNING_GOAL = {4.00, 0.00, -2.50};
+static constexpr double PLANNING_AVG_SPEED = 0.20;
 
 // Model parameters -----------------------------------------------
 static constexpr double grav = 9.81;

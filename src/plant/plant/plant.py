@@ -65,22 +65,30 @@ THRUST_ARROW_MAX_LEN = 1.20
 THRUST_ARROW_WIDTH = 0.008
 THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
 
-# Global OGM in the controller frame: x-forward, y-right, z-down.
+# Planning map is the controller-frame X-Z plane.
+# Controller convention: x-forward, y-right, z-down.
 PLANNING_MAP_RESOLUTION = 0.05
-PLANNING_MAP_X_MIN = -1.0
-PLANNING_MAP_X_MAX = 4.0
-PLANNING_MAP_Y_MIN = -2.0
-PLANNING_MAP_Y_MAX = 2.0
-PLANNING_VEHICLE_RADIUS = 0.25
-PLANNING_SAFETY_MARGIN = 0.20
+PLANNING_MAP_X_MIN = -0.30
+PLANNING_MAP_X_MAX = 4.30
+PLANNING_MAP_Z_MIN = -3.10
+PLANNING_MAP_Z_MAX = -0.40
 
-# The full sampled minimum-snap path is cyan; retained A* waypoints are green.
+# Approximate 50 cm x 50 cm vehicle.
+PLANNING_VEHICLE_RADIUS = 0.25
+PLANNING_SAFETY_MARGIN = 0.05
 PLANNING_PATH_WIDTH = 0.015
 PLANNING_PATH_RGBA = np.array([0.05, 0.80, 1.00, 0.90], dtype=np.float32)
+
 PLANNING_WAYPOINT_RADIUS = 0.06
 PLANNING_WAYPOINT_RGBA = np.array([0.20, 1.00, 0.20, 0.95], dtype=np.float32)
 
-LIDAR_MAX_RANGE = 3.0
+# Physical duct interior is approximately 1.0 m wide/high.
+PLANNING_DUCT_HALF_WIDTH = 0.50
+
+# Available region for the vehicle center.
+PLANNING_CENTER_HALF_WIDTH = (PLANNING_DUCT_HALF_WIDTH - PLANNING_VEHICLE_RADIUS - PLANNING_SAFETY_MARGIN)
+
+LIDAR_MAX_RANGE = 2.0
 LIDAR_RAY_WIDTH = 0.004
 LIDAR_HIT_RGBA = np.array([0.05, 0.80, 1.00, 0.90], dtype=np.float32)
 LIDAR_NO_HIT_RGBA = np.array([0.35, 0.55, 0.60, 0.20], dtype=np.float32)
@@ -422,57 +430,147 @@ class PlantRosNode(Node):
                 self.model.geom_rgba[geom_id, 3] = 0.0
 
     def make_global_ogm(self):
-        """Build a binary global OGM from named MuJoCo collision geoms.
+        """Build a virtual X-Z occupancy grid for the duct.
 
-        This is the simulator's global perception adapter: planning only receives
-        the OGM topic and does not know obstacle positions or shapes. A real
-        point-cloud mapper can replace this method without changing planning.cpp.
+        The second OccupancyGrid axis is controller z, not world y.
+
+        All cells are occupied by default. Only a narrow tube around the
+        duct centerline is carved as free space. Therefore A* cannot escape
+        around the side of the duct.
         """
-        width = int(round((PLANNING_MAP_X_MAX - PLANNING_MAP_X_MIN) / PLANNING_MAP_RESOLUTION))
-        height = int(round((PLANNING_MAP_Y_MAX - PLANNING_MAP_Y_MIN) / PLANNING_MAP_RESOLUTION))
-        x = PLANNING_MAP_X_MIN + (np.arange(width) + 0.5) * PLANNING_MAP_RESOLUTION
-        y = PLANNING_MAP_Y_MIN + (np.arange(height) + 0.5) * PLANNING_MAP_RESOLUTION
-        grid_x, grid_y = np.meshgrid(x, y)
-        occupied = np.zeros((height, width), dtype=np.int8)
-        obstacle_count = 0
 
-        for geom_id in range(self.model.ngeom):
-            name = mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
-            if name is None or not name.startswith("obstacle_"):
-                continue
+        width = int(round(
+            (PLANNING_MAP_X_MAX - PLANNING_MAP_X_MIN)
+            / PLANNING_MAP_RESOLUTION
+        ))
 
-            center = to_zdown(np.asarray(self.data.geom_xpos[geom_id], dtype=float))[:2]
-            size = self.model.geom_size[geom_id]
-            geom_type = self.model.geom_type[geom_id]
-            if geom_type == mujoco.mjtGeom.mjGEOM_BOX:
-                radius = float(np.hypot(size[0], size[1]))
-            elif geom_type in (mujoco.mjtGeom.mjGEOM_CYLINDER, mujoco.mjtGeom.mjGEOM_SPHERE, mujoco.mjtGeom.mjGEOM_CAPSULE):
-                radius = float(size[0])
-            else:
-                self.get_logger().warn(f"skip unsupported planning geom: {name}")
-                continue
+        height = int(round(
+            (PLANNING_MAP_Z_MAX - PLANNING_MAP_Z_MIN)
+            / PLANNING_MAP_RESOLUTION
+        ))
 
-            radius += PLANNING_VEHICLE_RADIUS + PLANNING_SAFETY_MARGIN
-            occupied[(grid_x - center[0]) ** 2 + (grid_y - center[1]) ** 2 <= radius ** 2] = 100
-            obstacle_count += 1
+        x = (
+            PLANNING_MAP_X_MIN
+            + (np.arange(width) + 0.5)
+            * PLANNING_MAP_RESOLUTION
+        )
+
+        z = (
+            PLANNING_MAP_Z_MIN
+            + (np.arange(height) + 0.5)
+            * PLANNING_MAP_RESOLUTION
+        )
+
+        grid_x, grid_z = np.meshgrid(x, z)
+
+        # Start with everything blocked.
+        occupied = np.full(
+            (height, width),
+            100,
+            dtype=np.int8
+        )
+
+        # Controller-frame centerline:
+        #
+        # lower:
+        #   (0.0, -1.0) -> (1.5, -1.0)
+        #
+        # 45 deg slope:
+        #   (1.5, -1.0) -> (3.0, -2.5)
+        #
+        # upper:
+        #   (3.0, -2.5) -> (4.0, -2.5)
+        #
+        centerline = np.array([
+            [-0.20, -1.00],
+            [ 1.50, -1.00],
+            [ 3.00, -2.50],
+            [ 4.20, -2.50],
+        ], dtype=float)
+
+        min_dist_sq = np.full(
+            grid_x.shape,
+            np.inf,
+            dtype=float
+        )
+
+        # Compute distance from every grid cell to the nearest
+        # centerline segment.
+        for k in range(centerline.shape[0] - 1):
+
+            p0 = centerline[k]
+            p1 = centerline[k + 1]
+
+            vx = p1[0] - p0[0]
+            vz = p1[1] - p0[1]
+
+            seg_len_sq = vx * vx + vz * vz
+
+            wx = grid_x - p0[0]
+            wz = grid_z - p0[1]
+
+            t = (
+                wx * vx + wz * vz
+            ) / max(seg_len_sq, 1.0e-12)
+
+            t = np.clip(t, 0.0, 1.0)
+
+            proj_x = p0[0] + t * vx
+            proj_z = p0[1] + t * vz
+
+            dist_sq = (
+                (grid_x - proj_x) ** 2
+                + (grid_z - proj_z) ** 2
+            )
+
+            min_dist_sq = np.minimum(
+                min_dist_sq,
+                dist_sq
+            )
+
+        free = (
+            min_dist_sq
+            <= PLANNING_CENTER_HALF_WIDTH ** 2
+        )
+
+        occupied[free] = 0
 
         msg = OccupancyGrid()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "world_zdown"
-        msg.info.resolution = PLANNING_MAP_RESOLUTION
+
+        msg.header.stamp = (
+            self.get_clock().now().to_msg()
+        )
+
+        # This topic is intentionally an X-Z planning grid.
+        msg.header.frame_id = "planning_xz"
+
+        msg.info.resolution = (
+            PLANNING_MAP_RESOLUTION
+        )
+
         msg.info.width = width
         msg.info.height = height
-        msg.info.origin.position.x = PLANNING_MAP_X_MIN
-        msg.info.origin.position.y = PLANNING_MAP_Y_MIN
+
+        msg.info.origin.position.x = (
+            PLANNING_MAP_X_MIN
+        )
+
+        # OccupancyGrid's second coordinate is reused as z.
+        msg.info.origin.position.y = (
+            PLANNING_MAP_Z_MIN
+        )
+
         msg.info.origin.orientation.w = 1.0
         msg.data = occupied.ravel().tolist()
 
         self.get_logger().info(
-            f"global OGM: {width}x{height}, {obstacle_count} obstacle geoms, "
-            f"inflation radius {PLANNING_VEHICLE_RADIUS + PLANNING_SAFETY_MARGIN:.2f} m"
+            f"planning X-Z OGM: "
+            f"{width}x{height}, "
+            f"free half width "
+            f"{PLANNING_CENTER_HALF_WIDTH:.2f} m"
         )
         return msg
-
+    
     def planning_path_callback(self, msg):
         path = np.asarray([
             [pose.pose.position.x, pose.pose.position.y, pose.pose.position.z]
