@@ -45,9 +45,22 @@ struct TargetCMD {
 };
 
 struct AllocationOutput {
+
   Eigen::Vector4d f = Eigen::Vector4d::Zero();
   Eigen::Vector2d beta = Eigen::Vector2d::Zero();
   Eigen::Vector4d alpha = Eigen::Vector4d::Zero();
+
+  Eigen::Matrix<double, 6, 1> wrench_cmd = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> wrench_alloc = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> wrench_real = Eigen::Matrix<double, 6, 1>::Zero();
+
+  Eigen::Matrix<double, 6, 1> w_dot_des = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> w_dot_q = Eigen::Matrix<double, 6, 1>::Zero();
+
+  Eigen::Matrix<double, 10, 1> q_dot_primary = Eigen::Matrix<double, 10, 1>::Zero();
+  Eigen::Matrix<double, 10, 1> q_dot_nullspace = Eigen::Matrix<double, 10, 1>::Zero();
+  Eigen::Matrix<double, 10, 1> q_dot_final = Eigen::Matrix<double, 10, 1>::Zero();
+
   double primary_scale = 1.0;
   double nullspace_scale = 1.0;
 };
@@ -181,6 +194,33 @@ inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
   return R;
 }
 
+inline Eigen::Matrix<double, 6, 1> evaluateA4B2Wrench(const Eigen::Vector4d& f, const Eigen::Vector2d& beta, const Eigen::Vector4d& alpha)
+{
+  Eigen::Matrix<double, 6, 1> W = Eigen::Matrix<double, 6, 1>::Zero();
+
+  static constexpr std::array<int, 4> beta_index = {0, 1, 1, 0};
+  static constexpr std::array<double, 4> x_sign = {1.0, -1.0, -1.0, 1.0};
+  static constexpr std::array<double, 4> y_sign = {1.0, 1.0, -1.0, -1.0};
+  static constexpr std::array<double, 4> reaction_sign = {1.0, -1.0, 1.0, -1.0};
+
+  for (int i = 0; i < 4; ++i)
+  {
+    const double a = alpha(i);
+    const double b = beta(beta_index[i]);
+
+    const Eigen::Vector3d r_i(x_sign[i] * params::HB_L, y_sign[i] * params::HB_L, 0.0);
+    const Eigen::Vector3d e_i(-std::sin(b) * std::cos(a), std::sin(a), -std::cos(b) * std::cos(a));
+
+    const Eigen::Vector3d force_i = f(i) * e_i;
+    const Eigen::Vector3d moment_i = r_i.cross(force_i) + reaction_sign[i] * params::HB_ZETA * force_i;
+
+    W.head<3>() += moment_i;
+    W.tail<3>() += force_i;
+  }
+
+  return W;
+}
+
 // Path utils =========================================================
 inline TargetCMD posPath(double t)
 {
@@ -250,7 +290,7 @@ inline TargetCMD posPath(double t)
 
 inline TargetCMD attPath(double t)
 {
-  static constexpr double HOVER_SEC = 1.0;
+  static constexpr double HOVER_SEC = 3.0;
   static constexpr double TUNE_SEC = 60.0;
   static constexpr double Z = 1.0;
   static constexpr double ROLL_AMP = 20.0 * M_PI / 180.0;
@@ -605,7 +645,7 @@ inline TargetCMD stepPath(double t)
   static constexpr double HOVER_SEC = 3.0;
   static constexpr double HOLD_SEC  = 3.0;
 
-  static constexpr double X_delta = 0.5;
+  static constexpr double X_delta = 0.0;
   static constexpr double Z = 1.0;
 
   TargetCMD cmd;
@@ -838,14 +878,9 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
       const double candidate = 0.5 * (feasible_scale + infeasible_scale);
       double candidate_lower = 0.0;
       double candidate_upper = 1.0;
-      if (nullspace_interval(candidate, candidate_lower, candidate_upper))
-      {
-        feasible_scale = candidate;
-      }
-      else
-      {
-        infeasible_scale = candidate;
-      }
+
+      if (nullspace_interval(candidate, candidate_lower, candidate_upper)) feasible_scale = candidate;
+      else infeasible_scale = candidate;
     }
 
     primary_scale = feasible_scale;
@@ -863,6 +898,18 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   for (int i = 0; i < 4; ++i) out.alpha(i) = std::clamp(q_cmd(i), -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
   for (int i = 0; i < 2; ++i) out.beta(i) = std::clamp(q_cmd(4 + i), -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
   for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(q_cmd(6 + i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
+
+  out.wrench_cmd = W_des;
+  out.wrench_alloc = evaluateA4B2Wrench(out.f, out.beta, out.alpha);
+  out.wrench_real = W_now;
+
+  out.w_dot_des = W_dot_des;
+  out.w_dot_q = J * q_dot;
+
+  out.q_dot_primary = q_dot_primary;
+  out.q_dot_nullspace = q_dot_nullspace;
+  out.q_dot_final = q_dot;
+
   out.primary_scale = primary_scale;
   out.nullspace_scale = nullspace_scale;
 

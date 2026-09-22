@@ -87,15 +87,15 @@
     <general name="BLDC3_thrust" site="prop3_site" gear="0 0 -1 0 0 -0.05" ctrlrange="0 20" ctrllimited="true"/>
     <general name="BLDC4_thrust" site="prop4_site" gear="0 0 -1 0 0 +0.05" ctrlrange="0 20" ctrllimited="true"/>
 
-    <position name="beta1_servo" joint="joint_beta1" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
-    <position name="beta2_servo" joint="joint_beta2" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
-    <position name="beta3_servo" joint="joint_beta3" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
-    <position name="beta4_servo" joint="joint_beta4" kp="10" kv="0.8" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true"/>
+    <position name="beta1_servo" joint="joint_beta1" kp="50" kv="5.0" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
+    <position name="beta2_servo" joint="joint_beta2" kp="50" kv="5.0" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
+    <position name="beta3_servo" joint="joint_beta3" kp="50" kv="5.0" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
+    <position name="beta4_servo" joint="joint_beta4" kp="50" kv="5.0" ctrlrange="-3.141592653589793 3.141592653589793" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
 
-    <position name="alpha1_servo" joint="joint_alpha1" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
-    <position name="alpha2_servo" joint="joint_alpha2" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
-    <position name="alpha3_servo" joint="joint_alpha3" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
-    <position name="alpha4_servo" joint="joint_alpha4" kp="12" kv="1.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true"/>
+    <position name="alpha1_servo" joint="joint_alpha1" kp="50" kv="5.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
+    <position name="alpha2_servo" joint="joint_alpha2" kp="50" kv="5.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
+    <position name="alpha3_servo" joint="joint_alpha3" kp="50" kv="5.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
+    <position name="alpha4_servo" joint="joint_alpha4" kp="50" kv="5.0" ctrlrange="-0.5235987756 0.5235987756" ctrllimited="true" forcerange="-4.1 4.1" forcelimited="true"/>
   </actuator>
 
   <sensor>

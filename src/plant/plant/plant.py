@@ -23,7 +23,7 @@ from multirotor_interfaces.msg import HexaInput, Input, MultirotorState
 # control rate and physics rate
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
-HB_SERVO_TAU_SEC = 0.2
+HB_SERVO_TAU_SEC = 0.0
 
 # Servo start offset [deg]
 # order: [alpha1, alpha2, alpha3, alpha4, beta1, beta2]
@@ -54,8 +54,8 @@ SHOW_PLANNING_PATH = True
 USE_LIDAR = True
 SHOW_LIDAR_RAYS = True
 USE_WIND = False
-USE_RANDOM_DISTURBANCE = False
-USE_X_IMPULSE = True
+USE_RANDOM_DISTURBANCE = True
+
 
 VIEW_CAMERA_NAME = "front_camera"
     
@@ -105,12 +105,19 @@ AIRFLOW_FORCE_LIMIT = 6.0
 AIRFLOW_TORQUE_LIMIT = 0.15
 
 RANDOM_DISTURBANCE_DIRECTION_ZDOWN = np.array([1.0, 0.0, 0.0], dtype=float)
-RANDOM_DISTURBANCE_FORCE_MAX_N = 3.0
+RANDOM_DISTURBANCE_FORCE_MAX_N = 10.0
 RANDOM_DISTURBANCE_TIME_CONSTANT = 0.2
 RANDOM_DISTURBANCE_SEED = 20260916
 
+USE_X_IMPULSE = False
+USE_PITCH_MOMENT_IMPULSE = False
+
 IMPULSE_DIRECTION_ZDOWN = np.array([1.0, 0.0, 0.0], dtype=float)
 IMPULSE_FORCE_N = 10.0
+
+IMPULSE_MOMENT_DIRECTION_BODY_ZDOWN = np.array([0.0, 1.0, 0.0], dtype=float)
+IMPULSE_MOMENT_NM = 0.5
+
 IMPULSE_DURATION_SEC = 0.1
 
 
@@ -120,11 +127,7 @@ class LPF:
     def __init__(self, tau_sec, dt_sec, initial):
         self.tau_sec = max(float(tau_sec), 0.0)
         self.dt_sec = max(float(dt_sec), 1.0e-9)
-        self.alpha = (
-            1.0
-            if self.tau_sec <= 1.0e-9
-            else 1.0 - math.exp(-self.dt_sec / self.tau_sec)
-        )
+        self.alpha = (1.0 if self.tau_sec <= 1.0e-9 else 1.0 - math.exp(-self.dt_sec / self.tau_sec))
         self.y = np.asarray(initial, dtype=float).copy()
 
     def update(self, x):
@@ -220,11 +223,7 @@ class PlantRosNode(Node):
         if self.mode not in ("position_cmd", "planning"):
             raise ValueError(f"mode must be position_cmd or planning, got {self.mode}")
         pkg_share = get_package_share_directory("plant")
-        xml_path = (
-            os.path.join(pkg_share, "xml", "HEXA_scene.xml")
-            if self.is_hexa
-            else os.path.join(pkg_share, "xml", "HB_scene.xml")
-        )
+        xml_path = (os.path.join(pkg_share, "xml", "HEXA_scene.xml") if self.is_hexa else os.path.join(pkg_share, "xml", "HB_scene.xml"))
 
         self.n_ctrl = HEXA_N_CTRL if self.is_hexa else HB_N_CTRL
         self.body_name = "base_link" if self.is_hexa else "body"
@@ -247,12 +246,8 @@ class PlantRosNode(Node):
         self.sid_body_linvel = self.sensor_id("body_linvel")
 
         if self.is_hexa:
-            self.sid_encoder_hexa_alpha = [
-                self.sensor_id(f"encoder_hexa_alpha{i}") for i in range(HEXA_N_ALPHA)
-            ]
-            self.prop_site_ids = [
-                self.site_id(f"rotor_{i}_thrust") for i in range(2 * HEXA_N_THRUST)
-            ]
+            self.sid_encoder_hexa_alpha = [self.sensor_id(f"encoder_hexa_alpha{i}") for i in range(HEXA_N_ALPHA)]
+            self.prop_site_ids = [self.site_id(f"rotor_{i}_thrust") for i in range(2 * HEXA_N_THRUST)]
         else:
             self.sid_encoder_beta1 = self.sensor_id("encoder_beta1")
             self.sid_encoder_beta2 = self.sensor_id("encoder_beta2")
@@ -263,12 +258,7 @@ class PlantRosNode(Node):
             self.sid_encoder_alpha2 = self.sensor_id("encoder_alpha2")
             self.sid_encoder_alpha3 = self.sensor_id("encoder_alpha3")
             self.sid_encoder_alpha4 = self.sensor_id("encoder_alpha4")
-            self.prop_site_ids = [
-                self.site_id("prop1_site"),
-                self.site_id("prop2_site"),
-                self.site_id("prop3_site"),
-                self.site_id("prop4_site"),
-            ]
+            self.prop_site_ids = [self.site_id("prop1_site"), self.site_id("prop2_site"), self.site_id("prop3_site"), self.site_id("prop4_site"),]
 
         self.bid_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.body_name)
         if self.bid_body < 0:
@@ -278,12 +268,8 @@ class PlantRosNode(Node):
         self.lidar_site_ids = []
         if self.use_lidar:
             lidar_names = ("front", "back", "left", "right", "up", "down")
-            self.sid_lidar = [
-                self.sensor_id(f"lidar_{name}_range") for name in lidar_names
-            ]
-            self.lidar_site_ids = [
-                self.site_id(f"lidar_{name}") for name in lidar_names
-            ]
+            self.sid_lidar = [self.sensor_id(f"lidar_{name}_range") for name in lidar_names]
+            self.lidar_site_ids = [self.site_id(f"lidar_{name}") for name in lidar_names]
 
         self.s_adr = self.model.sensor_adr
         self.s_dim = self.model.sensor_dim
@@ -292,6 +278,13 @@ class PlantRosNode(Node):
         self.random_disturbance_state = 0.0
         self.random_disturbance_force_mj = np.zeros(3, dtype=float)
         self.impulse_end_time = None
+        self.moment_impulse_end_time = None
+        moment_direction_norm = np.linalg.norm(IMPULSE_MOMENT_DIRECTION_BODY_ZDOWN)
+
+        if USE_PITCH_MOMENT_IMPULSE and moment_direction_norm <= 1.0e-9:
+            raise ValueError("IMPULSE_MOMENT_DIRECTION_BODY_ZDOWN must be non-zero")
+
+        self.impulse_moment_direction_body_mj = to_zdown(IMPULSE_MOMENT_DIRECTION_BODY_ZDOWN / max(moment_direction_norm, 1.0e-9))
 
         # Keep disturbance and sensor-noise realizations repeatable.
         np.random.seed(RANDOM_DISTURBANCE_SEED)
@@ -299,16 +292,12 @@ class PlantRosNode(Node):
         direction_norm = np.linalg.norm(RANDOM_DISTURBANCE_DIRECTION_ZDOWN)
         if USE_RANDOM_DISTURBANCE and direction_norm <= 1.0e-9:
             raise ValueError("RANDOM_DISTURBANCE_DIRECTION_ZDOWN must be non-zero")
-        self.random_disturbance_direction_mj = to_zdown(
-            RANDOM_DISTURBANCE_DIRECTION_ZDOWN / max(direction_norm, 1.0e-9)
-        )
+        self.random_disturbance_direction_mj = to_zdown(RANDOM_DISTURBANCE_DIRECTION_ZDOWN / max(direction_norm, 1.0e-9))
 
         impulse_direction_norm = np.linalg.norm(IMPULSE_DIRECTION_ZDOWN)
         if USE_X_IMPULSE and impulse_direction_norm <= 1.0e-9:
             raise ValueError("IMPULSE_DIRECTION_ZDOWN must be non-zero")
-        self.impulse_direction_mj = to_zdown(
-            IMPULSE_DIRECTION_ZDOWN / max(impulse_direction_norm, 1.0e-9)
-        )
+        self.impulse_direction_mj = to_zdown(IMPULSE_DIRECTION_ZDOWN / max(impulse_direction_norm, 1.0e-9))
 
         self.ctrl_recv = np.zeros(self.n_ctrl, dtype=float)
         self.ctrl = np.zeros(self.n_ctrl, dtype=float)
@@ -317,10 +306,7 @@ class PlantRosNode(Node):
             servo_offset_rad = np.deg2rad(HB_SERVO_OFFSET_DEG)
             alpha_offset = servo_offset_rad[0:4]
             beta_offset = servo_offset_rad[4:6]
-            beta_actuators = np.array(
-                [beta_offset[0], beta_offset[1], beta_offset[1], beta_offset[0]],
-                dtype=float
-            )
+            beta_actuators = np.array([beta_offset[0], beta_offset[1], beta_offset[1], beta_offset[0]], dtype=float)
 
             self.ctrl_recv[HB_N_THRUST:HB_N_THRUST + 4] = beta_actuators
             self.ctrl_recv[HB_N_THRUST + 4:HB_N_CTRL] = alpha_offset
@@ -331,11 +317,7 @@ class PlantRosNode(Node):
 
         self.hb_servo_lpf = None
         if not self.is_hexa:
-            self.hb_servo_lpf = LPF(
-                tau_sec=HB_SERVO_TAU_SEC,
-                dt_sec=1.0 / PHYSICS_HZ,
-                initial=self.ctrl[HB_N_THRUST:HB_N_CTRL],
-            )
+            self.hb_servo_lpf = LPF(tau_sec=HB_SERVO_TAU_SEC, dt_sec=1.0 / PHYSICS_HZ, initial=self.ctrl[HB_N_THRUST:HB_N_CTRL])
 
         self.prev_pub_t = None
         self.prev_linvel_zdown = None
@@ -350,25 +332,16 @@ class PlantRosNode(Node):
             self.sub_input = self.create_subscription(HexaInput, "/hexa_input", self.hexa_input_callback, 10)
         else:
             self.sub_input = self.create_subscription(Input, "/input", self.input_callback, 10)
-        self.sub_impulse_trigger = self.create_subscription(
-            Bool, "/test/impulse_trigger", self.impulse_trigger_callback, 1
-        )
+        self.sub_impulse_trigger = self.create_subscription(Bool, "/test/impulse_trigger", self.impulse_trigger_callback, 1)
+        self.sub_moment_impulse_trigger = self.create_subscription(Bool, "/test/moment_impulse_trigger", self.moment_impulse_trigger_callback, 1)
         self.pub_state = self.create_publisher(MultirotorState, "/multirotor_state", 10)
         self.pub_ogm = None
         if self.planning_enabled:
-            map_qos = QoSProfile(
-                depth=1,
-                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
-                reliability=QoSReliabilityPolicy.RELIABLE
-            )
+            map_qos = QoSProfile(depth=1, durability=QoSDurabilityPolicy.TRANSIENT_LOCAL, reliability=QoSReliabilityPolicy.RELIABLE)
             self.pub_ogm = self.create_publisher(OccupancyGrid, "/planning/ogm", map_qos)
             self.pub_ogm.publish(self.make_global_ogm())
-            self.sub_planning_path = self.create_subscription(
-                Path, "/planning/path", self.planning_path_callback, map_qos
-            )
-            self.sub_planning_waypoints = self.create_subscription(
-                Path, "/planning/waypoints", self.planning_waypoints_callback, map_qos
-            )
+            self.sub_planning_path = self.create_subscription(Path, "/planning/path", self.planning_path_callback, map_qos)
+            self.sub_planning_waypoints = self.create_subscription(Path, "/planning/waypoints", self.planning_waypoints_callback, map_qos)
 
         self.viewer_thread = threading.Thread(target=self.viewer_loop, daemon=True)
         self.sim_thread = threading.Thread(target=self.sim_loop, daemon=True)
@@ -387,10 +360,7 @@ class PlantRosNode(Node):
             return
 
         if HB_SERVO_OFFSET_DEG.shape != (6,):
-            raise ValueError(
-                "HB_SERVO_OFFSET_DEG must be "
-                "[alpha1, alpha2, alpha3, alpha4, beta1, beta2]"
-            )
+            raise ValueError("HB_SERVO_OFFSET_DEG must be " "[alpha1, alpha2, alpha3, alpha4, beta1, beta2]")
 
         servo_offset_rad = np.deg2rad(HB_SERVO_OFFSET_DEG)
         alpha_offset = servo_offset_rad[0:4]
@@ -408,9 +378,7 @@ class PlantRosNode(Node):
         }
 
         for joint_name, value in joint_values.items():
-            joint_id = mujoco.mj_name2id(
-                self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
-            )
+            joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
 
             if joint_id < 0:
                 raise RuntimeError(f"joint not found: {joint_name}")
@@ -439,36 +407,18 @@ class PlantRosNode(Node):
         around the side of the duct.
         """
 
-        width = int(round(
-            (PLANNING_MAP_X_MAX - PLANNING_MAP_X_MIN)
-            / PLANNING_MAP_RESOLUTION
-        ))
+        width = int(round((PLANNING_MAP_X_MAX - PLANNING_MAP_X_MIN) / PLANNING_MAP_RESOLUTION))
 
-        height = int(round(
-            (PLANNING_MAP_Z_MAX - PLANNING_MAP_Z_MIN)
-            / PLANNING_MAP_RESOLUTION
-        ))
+        height = int(round((PLANNING_MAP_Z_MAX - PLANNING_MAP_Z_MIN) / PLANNING_MAP_RESOLUTION))
 
-        x = (
-            PLANNING_MAP_X_MIN
-            + (np.arange(width) + 0.5)
-            * PLANNING_MAP_RESOLUTION
-        )
+        x = (PLANNING_MAP_X_MIN + (np.arange(width) + 0.5) * PLANNING_MAP_RESOLUTION)
 
-        z = (
-            PLANNING_MAP_Z_MIN
-            + (np.arange(height) + 0.5)
-            * PLANNING_MAP_RESOLUTION
-        )
+        z = (PLANNING_MAP_Z_MIN + (np.arange(height) + 0.5) * PLANNING_MAP_RESOLUTION)
 
         grid_x, grid_z = np.meshgrid(x, z)
 
         # Start with everything blocked.
-        occupied = np.full(
-            (height, width),
-            100,
-            dtype=np.int8
-        )
+        occupied = np.full((height, width), 100, dtype=np.int8)
 
         # Controller-frame centerline:
         #
@@ -481,18 +431,9 @@ class PlantRosNode(Node):
         # upper:
         #   (3.0, -2.5) -> (4.0, -2.5)
         #
-        centerline = np.array([
-            [-0.20, -1.00],
-            [ 1.50, -1.00],
-            [ 3.00, -2.50],
-            [ 4.20, -2.50],
-        ], dtype=float)
+        centerline = np.array([[-0.20, -1.00], [1.50, -1.00], [3.00, -2.50], [4.20, -2.50],], dtype=float)
 
-        min_dist_sq = np.full(
-            grid_x.shape,
-            np.inf,
-            dtype=float
-        )
+        min_dist_sq = np.full(grid_x.shape, np.inf, dtype=float)
 
         # Compute distance from every grid cell to the nearest
         # centerline segment.
@@ -509,81 +450,51 @@ class PlantRosNode(Node):
             wx = grid_x - p0[0]
             wz = grid_z - p0[1]
 
-            t = (
-                wx * vx + wz * vz
-            ) / max(seg_len_sq, 1.0e-12)
+            t = (wx * vx + wz * vz) / max(seg_len_sq, 1.0e-12)
 
             t = np.clip(t, 0.0, 1.0)
 
             proj_x = p0[0] + t * vx
             proj_z = p0[1] + t * vz
 
-            dist_sq = (
-                (grid_x - proj_x) ** 2
-                + (grid_z - proj_z) ** 2
-            )
+            dist_sq = ((grid_x - proj_x) ** 2 + (grid_z - proj_z) ** 2)
 
-            min_dist_sq = np.minimum(
-                min_dist_sq,
-                dist_sq
-            )
+            min_dist_sq = np.minimum(min_dist_sq, dist_sq)
 
-        free = (
-            min_dist_sq
-            <= PLANNING_CENTER_HALF_WIDTH ** 2
-        )
+        free = (min_dist_sq <= PLANNING_CENTER_HALF_WIDTH ** 2)
 
         occupied[free] = 0
 
         msg = OccupancyGrid()
 
-        msg.header.stamp = (
-            self.get_clock().now().to_msg()
-        )
+        msg.header.stamp = (self.get_clock().now().to_msg())
 
         # This topic is intentionally an X-Z planning grid.
         msg.header.frame_id = "planning_xz"
 
-        msg.info.resolution = (
-            PLANNING_MAP_RESOLUTION
-        )
+        msg.info.resolution = (PLANNING_MAP_RESOLUTION)
 
         msg.info.width = width
         msg.info.height = height
 
-        msg.info.origin.position.x = (
-            PLANNING_MAP_X_MIN
-        )
+        msg.info.origin.position.x = (PLANNING_MAP_X_MIN)
 
         # OccupancyGrid's second coordinate is reused as z.
-        msg.info.origin.position.y = (
-            PLANNING_MAP_Z_MIN
-        )
+        msg.info.origin.position.y = (PLANNING_MAP_Z_MIN)
 
         msg.info.origin.orientation.w = 1.0
         msg.data = occupied.ravel().tolist()
 
-        self.get_logger().info(
-            f"planning X-Z OGM: "
-            f"{width}x{height}, "
-            f"free half width "
-            f"{PLANNING_CENTER_HALF_WIDTH:.2f} m"
-        )
+        self.get_logger().info(f"planning X-Z OGM: " f"{width}x{height}, " f"free half width " f"{PLANNING_CENTER_HALF_WIDTH:.2f} m")
         return msg
     
     def planning_path_callback(self, msg):
-        path = np.asarray([
-            [pose.pose.position.x, pose.pose.position.y, pose.pose.position.z]
-            for pose in msg.poses
-        ], dtype=float).reshape((-1, 3))
+        path = np.asarray([[pose.pose.position.x, pose.pose.position.y, pose.pose.position.z] for pose in msg.poses], dtype=float).reshape((-1, 3))
         with self.lock:
             self.planning_path = path
 
     def planning_waypoints_callback(self, msg):
-        waypoints = np.asarray([
-            [pose.pose.position.x, pose.pose.position.y, pose.pose.position.z]
-            for pose in msg.poses
-        ], dtype=float).reshape((-1, 3))
+        waypoints = np.asarray([[pose.pose.position.x, pose.pose.position.y, pose.pose.position.z] for pose in msg.poses], dtype=float).reshape((-1, 3))
         with self.lock:
             self.planning_waypoints = waypoints
 
@@ -613,9 +524,7 @@ class PlantRosNode(Node):
         if not self.use_lidar:
             return np.full(6, -1.0, dtype=float)
 
-        lidar = np.array([
-            self.sensing_state(sid)[0] for sid in self.sid_lidar
-        ], dtype=float)
+        lidar = np.array([self.sensing_state(sid)[0] for sid in self.sid_lidar], dtype=float)
         lidar[(lidar < 0.0) | (lidar > LIDAR_MAX_RANGE)] = -1.0
         return lidar
 
@@ -623,50 +532,25 @@ class PlantRosNode(Node):
         if not USE_WIND or not self.use_lidar:
             return
 
-        decay = math.exp(
-            -1.0 / (PHYSICS_HZ * AIRFLOW_TIME_CONSTANT)
-        )
-        self.airflow_state = (
-            decay * self.airflow_state
-            + math.sqrt(1.0 - decay * decay)
-            * np.random.normal(size=self.airflow_state.shape)
-        )
+        decay = math.exp(-1.0 / (PHYSICS_HZ * AIRFLOW_TIME_CONSTANT))
+        self.airflow_state = (decay * self.airflow_state + math.sqrt(1.0 - decay * decay) * np.random.normal(size=self.airflow_state.shape))
 
-        nearby = self.lidar_ranges[
-            (self.lidar_ranges >= 0.0)
-            & (self.lidar_ranges < AIRFLOW_RANGE)
-        ]
+        nearby = self.lidar_ranges[(self.lidar_ranges >= 0.0) & (self.lidar_ranges < AIRFLOW_RANGE)]
 
         activation = 0.0
         if nearby.size >= 2:
-            activation = np.clip(
-                (AIRFLOW_RANGE - np.min(nearby)) / AIRFLOW_FADE_RANGE,
-                0.0,
-                1.0
-            )
+            activation = np.clip((AIRFLOW_RANGE - np.min(nearby)) / AIRFLOW_FADE_RANGE, 0.0, 1.0)
             activation = activation * activation * (3.0 - 2.0 * activation)
 
         wind_velocity = AIRFLOW_VELOCITY_STD * self.airflow_state
         body_velocity = self.sensing_state(self.sid_body_linvel)
         relative_wind_world = wind_velocity - body_velocity
 
-        R_body_world = np.asarray(
-            self.data.xmat[self.bid_body], dtype=float
-        ).reshape(3, 3)
+        R_body_world = np.asarray(self.data.xmat[self.bid_body], dtype=float).reshape(3, 3)
         relative_wind_body = R_body_world.T @ relative_wind_world
-        airflow_force_body = (
-            0.5
-            * AIR_DENSITY
-            * AIRFLOW_DRAG_COEFF
-            * AIRFLOW_REFERENCE_AREA
-            * relative_wind_body
-            * np.abs(relative_wind_body)
-        )
+        airflow_force_body = (0.5 * AIR_DENSITY * AIRFLOW_DRAG_COEFF * AIRFLOW_REFERENCE_AREA * relative_wind_body * np.abs(relative_wind_body))
         airflow_force = activation * (R_body_world @ airflow_force_body)
-        airflow_torque = activation * (
-            R_body_world
-            @ np.cross(AIRFLOW_CP_OFFSET_BODY, airflow_force_body)
-        )
+        airflow_torque = activation * (R_body_world @ np.cross(AIRFLOW_CP_OFFSET_BODY, airflow_force_body))
 
         force_norm = np.linalg.norm(airflow_force)
         if force_norm > AIRFLOW_FORCE_LIMIT:
@@ -685,20 +569,11 @@ class PlantRosNode(Node):
         if not USE_RANDOM_DISTURBANCE:
             return
 
-        decay = math.exp(
-            -1.0 / (PHYSICS_HZ * RANDOM_DISTURBANCE_TIME_CONSTANT)
-        )
-        self.random_disturbance_state = (
-            decay * self.random_disturbance_state
-            + math.sqrt(1.0 - decay * decay) * np.random.normal()
-        )
+        decay = math.exp(-1.0 / (PHYSICS_HZ * RANDOM_DISTURBANCE_TIME_CONSTANT))
+        self.random_disturbance_state = (decay * self.random_disturbance_state + math.sqrt(1.0 - decay * decay) * np.random.normal())
 
-        random_scale = abs(math.tanh(self.random_disturbance_state))
-        disturbance_force = (
-            RANDOM_DISTURBANCE_FORCE_MAX_N
-            * random_scale
-            * self.random_disturbance_direction_mj
-        )
+        random_scale = math.tanh(self.random_disturbance_state)
+        disturbance_force = (RANDOM_DISTURBANCE_FORCE_MAX_N * random_scale * self.random_disturbance_direction_mj)
         self.random_disturbance_force_mj = disturbance_force
         self.data.xfrc_applied[self.bid_body, :3] += disturbance_force
 
@@ -708,9 +583,7 @@ class PlantRosNode(Node):
 
         with self.lock:
             self.impulse_end_time = self.data.time + IMPULSE_DURATION_SEC
-            self.get_logger().info(
-                f"impulse triggered at sim t={self.data.time:.3f} s"
-            )
+            self.get_logger().info(f"impulse triggered at sim t={self.data.time:.3f} s")
 
     def apply_x_impulse(self):
         if self.impulse_end_time is None or self.data.time >= self.impulse_end_time:
@@ -719,6 +592,25 @@ class PlantRosNode(Node):
         impulse_force = IMPULSE_FORCE_N * self.impulse_direction_mj
         self.random_disturbance_force_mj += impulse_force
         self.data.xfrc_applied[self.bid_body, :3] += impulse_force
+
+    def moment_impulse_trigger_callback(self, msg):
+        if not USE_PITCH_MOMENT_IMPULSE or not msg.data:
+            return
+
+        with self.lock:
+            self.moment_impulse_end_time = self.data.time + IMPULSE_DURATION_SEC
+            self.get_logger().info(f"pitch moment impulse triggered at sim t={self.data.time:.3f} s")
+
+
+    def apply_pitch_moment_impulse(self):
+        if self.moment_impulse_end_time is None or self.data.time >= self.moment_impulse_end_time:
+            return
+
+        R_body_world = np.asarray(self.data.xmat[self.bid_body], dtype=float).reshape(3, 3)
+
+        moment_world_mj = IMPULSE_MOMENT_NM * (R_body_world @ self.impulse_moment_direction_body_mj)
+
+        self.data.xfrc_applied[self.bid_body, 3:6] += moment_world_mj
 
     def input_callback(self, msg):
         f = np.asarray(msg.f, dtype=float)
@@ -766,9 +658,7 @@ class PlantRosNode(Node):
             self.ctrl[0:HB_N_THRUST] = self.ctrl_recv[0:HB_N_THRUST]
 
             # Servo commands [beta1..4, alpha1..4] follow a first-order lag.
-            self.ctrl[HB_N_THRUST:HB_N_CTRL] = self.hb_servo_lpf.update(
-                self.ctrl_recv[HB_N_THRUST:HB_N_CTRL]
-            )
+            self.ctrl[HB_N_THRUST:HB_N_CTRL] = self.hb_servo_lpf.update(self.ctrl_recv[HB_N_THRUST:HB_N_CTRL])
 
         self.data.ctrl[:self.n_ctrl] = self.ctrl[:self.n_ctrl]
 
@@ -786,15 +676,10 @@ class PlantRosNode(Node):
         if self.is_hexa:
             beta = np.zeros(HB_N_BETA, dtype=float)
             alpha = np.zeros(HB_N_ALPHA, dtype=float)
-            hexa_alpha = np.array([
-                self.sensing_state(sensor_id)[0] for sensor_id in self.sid_encoder_hexa_alpha
-            ], dtype=float)
+            hexa_alpha = np.array([self.sensing_state(sensor_id)[0] for sensor_id in self.sid_encoder_hexa_alpha], dtype=float)
             hexa_alpha = add_noise(hexa_alpha, SIG_ENCODER)
         else:
-            beta = np.array([
-                self.sensing_state(self.sid_encoder_beta1)[0],
-                self.sensing_state(self.sid_encoder_beta2)[0],
-            ], dtype=float)
+            beta = np.array([self.sensing_state(self.sid_encoder_beta1)[0], self.sensing_state(self.sid_encoder_beta2)[0],], dtype=float)
 
             alpha = np.array([
                 self.sensing_state(self.sid_encoder_alpha1)[0],
@@ -863,6 +748,7 @@ class PlantRosNode(Node):
                     self.apply_wall_airflow()
                     self.apply_random_disturbance()
                     self.apply_x_impulse()
+                    self.apply_pitch_moment_impulse()
                     mujoco.mj_step(self.model, self.data)
                     next_step += dt_step
 
@@ -908,11 +794,7 @@ class PlantRosNode(Node):
             if thrust <= 1.0e-6:
                 continue
 
-            length = np.clip(
-                THRUST_ARROW_SCALE * thrust,
-                THRUST_ARROW_MIN_LEN,
-                THRUST_ARROW_MAX_LEN
-            )
+            length = np.clip(THRUST_ARROW_SCALE * thrust, THRUST_ARROW_MIN_LEN, THRUST_ARROW_MAX_LEN)
 
             pos = np.array(self.data.site_xpos[site_id], dtype=np.float64)
             R = np.array(self.data.site_xmat[site_id], dtype=np.float64).reshape(3, 3)
@@ -920,21 +802,8 @@ class PlantRosNode(Node):
             tip = pos + length * thrust_dir
 
             geom = scn.geoms[scn.ngeom]
-            mujoco.mjv_initGeom(
-                geom,
-                mujoco.mjtGeom.mjGEOM_ARROW,
-                np.zeros(3, dtype=np.float64),
-                np.zeros(3, dtype=np.float64),
-                np.eye(3, dtype=np.float64).reshape(9),
-                THRUST_ARROW_RGBA
-            )
-            mujoco.mjv_connector(
-                geom,
-                mujoco.mjtGeom.mjGEOM_ARROW,
-                THRUST_ARROW_WIDTH,
-                pos,
-                tip
-            )
+            mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_ARROW, np.zeros(3, dtype=np.float64), np.zeros(3, dtype=np.float64), np.eye(3, dtype=np.float64).reshape(9), THRUST_ARROW_RGBA)
+            mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_ARROW, THRUST_ARROW_WIDTH, pos, tip)
             scn.ngeom += 1
 
     def update_lidar_rays(self, viewer):
@@ -950,10 +819,7 @@ class PlantRosNode(Node):
             hit = distance >= 0.0
             length = min(float(distance), LIDAR_MAX_RANGE) if hit else LIDAR_MAX_RANGE
             pos = np.array(self.data.site_xpos[site_id], dtype=np.float64)
-            R_site = np.array(
-                self.data.site_xmat[site_id],
-                dtype=np.float64
-            ).reshape(3, 3)
+            R_site = np.array(self.data.site_xmat[site_id], dtype=np.float64).reshape(3, 3)
             tip = pos + length * R_site[:, 2]
 
             geom = scn.geoms[scn.ngeom]
@@ -965,13 +831,7 @@ class PlantRosNode(Node):
                 np.eye(3, dtype=np.float64).reshape(9),
                 LIDAR_HIT_RGBA if hit else LIDAR_NO_HIT_RGBA
             )
-            mujoco.mjv_connector(
-                geom,
-                mujoco.mjtGeom.mjGEOM_LINE,
-                LIDAR_RAY_WIDTH,
-                pos,
-                tip
-            )
+            mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_LINE, LIDAR_RAY_WIDTH, pos, tip)
             scn.ngeom += 1
 
     def update_planning_visualization(self, viewer):
@@ -1008,21 +868,8 @@ class PlantRosNode(Node):
         for start in range(0, path_count - 1, stride):
             end = min(start + stride, path_count - 1)
             geom = scn.geoms[scn.ngeom]
-            mujoco.mjv_initGeom(
-                geom,
-                mujoco.mjtGeom.mjGEOM_LINE,
-                np.zeros(3, dtype=np.float64),
-                np.zeros(3, dtype=np.float64),
-                np.eye(3, dtype=np.float64).reshape(9),
-                PLANNING_PATH_RGBA
-            )
-            mujoco.mjv_connector(
-                geom,
-                mujoco.mjtGeom.mjGEOM_LINE,
-                PLANNING_PATH_WIDTH,
-                to_mj(self.planning_path[start]).astype(np.float64),
-                to_mj(self.planning_path[end]).astype(np.float64)
-            )
+            mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_LINE, np.zeros(3, dtype=np.float64), np.zeros(3, dtype=np.float64), np.eye(3, dtype=np.float64).reshape(9), PLANNING_PATH_RGBA)
+            mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_LINE, PLANNING_PATH_WIDTH, to_mj(self.planning_path[start]).astype(np.float64), to_mj(self.planning_path[end]).astype(np.float64))
             scn.ngeom += 1
 
     def viewer_loop(self):

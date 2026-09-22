@@ -11,6 +11,7 @@ set(msg_files
   "msg/MultirotorState.msg"
   "msg/Cmd.msg"
   "msg/Wrench.msg"
+  "msg/Debug.msg"
 )
 
 rosidl_generate_interfaces(${PROJECT_NAME}

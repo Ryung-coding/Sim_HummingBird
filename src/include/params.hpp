@@ -35,9 +35,9 @@ static constexpr double HEXA_L = 0.300; //form codex
 static constexpr double HEXA_ZETA = HB_ZETA;
 
 // position controller -----------------------------------------------
-static constexpr std::array<double, 3> Kp_pos = {40.0, 40.0, 60.0};
-static constexpr std::array<double, 3> Ki_pos = {0.10, 0.10, 0.10};
-static constexpr std::array<double, 3> Kd_pos = {12.0, 12.0, 30.0};
+static constexpr std::array<double, 3> Kp_pos = {100.0, 100.0, 100.0};
+static constexpr std::array<double, 3> Ki_pos = {0.50, 0.50, 0.50};
+static constexpr std::array<double, 3> Kd_pos = {40.0, 40.0, 40.0};
 // static constexpr std::array<double, 3> Kp_pos = {60.0, 60.0, 60.0};
 // static constexpr std::array<double, 3> Ki_pos = {0.50, 0.50, 0.10};
 // static constexpr std::array<double, 3> Kd_pos = {10.0, 10.0, 30.0};
@@ -65,11 +65,11 @@ static constexpr double HB_F_CMD_MAX = 20.0;
 static constexpr double HB_VIRTUAL_LAMBDA = 1.0e-4;
 
 // Allocation parameters -----------------------------------------------
-inline const Eigen::DiagonalMatrix<double, 6> HB_KJ = [] {Eigen::DiagonalMatrix<double, 6> K; K.diagonal() << 60.0, 60.0, 60.0, 20.0, 20.0, 20.0; return K;}();
-inline const Eigen::DiagonalMatrix<double, 10> HB_W_INV = [] {Eigen::DiagonalMatrix<double, 10> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 300.0, 300.0, 300.0, 300.0; return W;}();
-static constexpr std::array<double, 10> HB_QDOT_MAX = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 500.0, 500.0, 500.0, 500.0};
-static constexpr std::array<double, 3> HB_NULL_K = {0.3, 0.3, 0.1}; // [alpha, beta, thrust]
-static constexpr double HB_BETA_REF = 20.0 * M_PI / 180.0; // [rad]
+inline const Eigen::DiagonalMatrix<double, 6> HB_KJ = [] {Eigen::DiagonalMatrix<double, 6> K; K.diagonal() << 30.0, 30.0, 30.0, 10.0, 10.0, 10.0; return K;}();
+inline const Eigen::DiagonalMatrix<double, 10> HB_W_INV = [] {Eigen::DiagonalMatrix<double, 10> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000.0, 1000.0, 1000.0, 1000.0; return W;}();
+static constexpr std::array<double, 10> HB_QDOT_MAX = {6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 200.0, 200.0, 200.0, 200.0};
+static constexpr std::array<double, 3> HB_NULL_K = {0.5, 0.5, 0.3}; // [alpha, beta, thrust]
+static constexpr double HB_BETA_REF = 0.0 * M_PI / 180.0; // [rad]
 
 inline const Eigen::DiagonalMatrix<double, 6> HEXA_KJ = HB_KJ;
 inline const Eigen::DiagonalMatrix<double, 12> HEXA_W_INV = [] {Eigen::DiagonalMatrix<double, 12> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0; return W;}();

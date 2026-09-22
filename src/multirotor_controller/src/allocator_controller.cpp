@@ -4,6 +4,7 @@
 #include <multirotor_interfaces/msg/input.hpp>
 #include <multirotor_interfaces/msg/multirotor_state.hpp>
 #include <multirotor_interfaces/msg/wrench.hpp>
+#include <multirotor_interfaces/msg/debug.hpp>
 
 #include <Eigen/Dense>
 #include <cmath>
@@ -28,7 +29,11 @@ public:
     state_subscription_ = create_subscription<multirotor_interfaces::msg::MultirotorState>("/multirotor_state", 10, std::bind(&AllocatorController::onState, this, std::placeholders::_1));
 
     if (is_hexa_) hexa_input_publisher_ = create_publisher<multirotor_interfaces::msg::HexaInput>("/hexa_input", 10);
-    else input_publisher_ = create_publisher<multirotor_interfaces::msg::Input>("/input", 10);
+    else
+    {
+      input_publisher_ = create_publisher<multirotor_interfaces::msg::Input>("/input", 10);
+      debug_publisher_ = create_publisher<multirotor_interfaces::msg::Debug>("/allocation_debug", 10);
+    }    
 
     att_cmd_.setZero();
     alpha_measured_.setZero();
@@ -105,6 +110,29 @@ private:
     out.beta[1] = alloc.beta(1);
 
     input_publisher_->publish(out);
+
+    multirotor_interfaces::msg::Debug debug;
+
+    for (int i = 0; i < 6; ++i)
+    {
+      debug.wrench_cmd[i] = alloc.wrench_cmd(i);
+      debug.wrench_alloc[i] = alloc.wrench_alloc(i);
+      debug.wrench_real[i] = alloc.wrench_real(i);
+      debug.w_dot_des[i] = alloc.w_dot_des(i);
+      debug.w_dot_q[i] = alloc.w_dot_q(i);
+    }
+
+    for (int i = 0; i < 10; ++i)
+    {
+      debug.q_dot_primary[i] = alloc.q_dot_primary(i);
+      debug.q_dot_nullspace[i] = alloc.q_dot_nullspace(i);
+      debug.q_dot_final[i] = alloc.q_dot_final(i);
+    }
+
+    debug.primary_scale = alloc.primary_scale;
+    debug.nullspace_scale = alloc.nullspace_scale;
+
+    debug_publisher_->publish(debug);
   }
 
   rclcpp::Subscription<multirotor_interfaces::msg::Cmd>::SharedPtr cmd_subscription_;
@@ -112,6 +140,7 @@ private:
   rclcpp::Subscription<multirotor_interfaces::msg::MultirotorState>::SharedPtr state_subscription_;
   rclcpp::Publisher<multirotor_interfaces::msg::Input>::SharedPtr input_publisher_;
   rclcpp::Publisher<multirotor_interfaces::msg::HexaInput>::SharedPtr hexa_input_publisher_;
+  rclcpp::Publisher<multirotor_interfaces::msg::Debug>::SharedPtr debug_publisher_;
 
   std::string vehicle_;
   bool is_hexa_{false};
