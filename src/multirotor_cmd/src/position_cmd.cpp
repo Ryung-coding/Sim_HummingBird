@@ -26,23 +26,26 @@ private:
     Cmd msg;
 
     const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
-    // const auto cmd = utils::trackApple(t);
-    // const auto cmd = utils::takeApple(t);
-    // const auto cmd = utils::positionTuningPath(t);
-    // const auto cmd = utils::attitudeTuningPath(t);
-    // const auto cmd = utils::agilePath(t);
-    const auto cmd = utils::positionTrack(t);
+
+    // const auto cmd = utils::attPath(t);
+    // const auto cmd = utils::posPath(t);
+    // const auto cmd = utils::stepAttPath(t);
+    // const auto cmd = utils::throughWallPath(t);
+    // const auto cmd = utils::circularWallPath(t);
+    const auto cmd = utils::stepPath(t);
 
     msg.pos_cmd[0] = cmd.x;
     msg.pos_cmd[1] = cmd.y;
     msg.pos_cmd[2] = -cmd.z;
 
-    if constexpr (params::USE_SO3_HEADING_CMD) {
+    if constexpr (params::USE_SO3_HEADING_CMD) 
+    {
       msg.att_cmd[0] = std::cos(cmd.yaw);
       msg.att_cmd[1] = std::sin(cmd.yaw);
       msg.att_cmd[2] = 0.0;
     }
-    else {
+    else 
+    {
       msg.att_cmd[0] = cmd.roll;
       msg.att_cmd[1] = cmd.pitch;
       msg.att_cmd[2] = cmd.yaw;

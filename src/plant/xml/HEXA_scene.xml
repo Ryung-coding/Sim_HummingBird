@@ -1,0 +1,19 @@
+<mujoco model="HEXA_scene">
+  <include file="HEXA_model.xml"/>
+  <asset>
+    <texture name="sky" type="skybox" builtin="gradient" rgb1="0.42 0.62 0.82" rgb2="0.86 0.92 0.98" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1="0.72 0.74 0.76" rgb2="0.90 0.91 0.92" width="512" height="512"/>
+    <material name="floor_grid" texture="grid" texrepeat="80 80" reflectance="0.18"/>
+  </asset>
+
+  <worldbody>
+    <light pos="0 -3 4" dir="0 0 -1" diffuse="1 1 0.96" ambient="0.35 0.38 0.42"/>
+    <geom name="floor" type="plane" size="100 100 0.05" material="floor_grid"/>
+    <geom name="obstacle_pillar_0" type="cylinder" pos="0.90 0.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+    <geom name="obstacle_pillar_1" type="cylinder" pos="1.70 -1.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+    <geom name="obstacle_pillar_2" type="cylinder" pos="1.70 1.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+    <geom name="obstacle_pillar_3" type="cylinder" pos="2.45 0.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+  </worldbody>
+
+
+</mujoco>

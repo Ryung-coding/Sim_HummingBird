@@ -1,0 +1,43 @@
+<mujoco model="HB_scene">
+  <include file="HB_model.xml"/>
+
+  <statistic center="2.5 0 1.2" extent="7.0"/>
+
+  <visual>
+    <headlight diffuse="0.65 0.65 0.65" ambient="0.20 0.20 0.20" specular="0.12 0.12 0.12"/>
+    <rgba haze="0.35 0.45 0.35 1"/>
+    <global azimuth="-130" elevation="-35" ellipsoidinertia="false"/>
+  </visual>
+
+  <default>
+    <default class="duct_wall">
+      <geom contype="1" conaffinity="2" condim="3" friction="0.8 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001" group="1"/>
+    </default>
+
+    <default class="duct_decor">
+      <geom contype="0" conaffinity="0" group="5"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.5 0.5 0.5" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="forest_ground_tex" builtin="checker" mark="edge" rgb1="0.15 0.15 0.17" rgb2="0.1 0.1 0.1" markrgb="0.3 0.3 0.3" width="100" height="100"/>
+
+    <material name="forest_ground" texture="forest_ground_tex" texuniform="true" texrepeat="2 2" reflectance="0"/>
+  </asset>
+
+  <worldbody>
+    <light pos="2.5 0 10" dir="0 0 -1" directional="true"/>
+    <light pos="-3 -5 6" dir="1 1 -1" directional="true" diffuse="0.35 0.32 0.25"/>
+
+    <camera name="overview_camera" pos="2.5 -8.0 5.0" xyaxes="1 0 0 0 0.35 0.94" fovy="48"/>
+
+    <geom name="floor" size="0 0 0.05" type="plane" material="forest_ground" contype="1" conaffinity="2" condim="3" friction="1.0 0.005 0.0001" solref="0.04 1" solimp="0.8 0.95 0.001"/>
+    <!-- Named collision geoms are discovered by plant.py to build /planning/ogm. -->
+    <geom name="obstacle_pillar_0" type="cylinder" pos="0.90 0.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+    <geom name="obstacle_pillar_1" type="cylinder" pos="1.70 -1.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+    <geom name="obstacle_pillar_2" type="cylinder" pos="1.70 1.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+    <geom name="obstacle_pillar_3" type="cylinder" pos="2.45 0.00 0.75" size="0.20 0.75" rgba="0.85 0.18 0.12 1" contype="1" conaffinity="2"/>
+
+  </worldbody>
+</mujoco>

@@ -4,8 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <sstream>
-#include <string>
 #include <params.hpp>
 
 namespace utils {
@@ -48,18 +46,17 @@ struct TargetCMD {
 
 struct AllocationOutput {
   Eigen::Vector4d f = Eigen::Vector4d::Zero();
-  Eigen::Vector4d theta = Eigen::Vector4d::Zero();
-  Eigen::Vector4d phi = Eigen::Vector4d::Zero();
+  Eigen::Vector2d beta = Eigen::Vector2d::Zero();
+  Eigen::Vector4d alpha = Eigen::Vector4d::Zero();
+  double primary_scale = 1.0;
+  double nullspace_scale = 1.0;
 };
 
-struct AllocationCheck {
-  bool problem = false;
-  Eigen::Vector3d moment_actual = Eigen::Vector3d::Zero();
-  Eigen::Vector3d force_actual = Eigen::Vector3d::Zero();
-  Eigen::Vector3d moment_error = Eigen::Vector3d::Zero();
-  Eigen::Vector3d force_error = Eigen::Vector3d::Zero();
-  std::string message;
+struct HexaAllocationOutput {
+  Eigen::Matrix<double, 6, 1> f = Eigen::Matrix<double, 6, 1>::Zero();
+  Eigen::Matrix<double, 6, 1> alpha = Eigen::Matrix<double, 6, 1>::Zero();
 };
+
 
 // Math utils ========================================================
 inline Eigen::Matrix3d hat(const Eigen::Vector3d& v)
@@ -92,6 +89,11 @@ inline Eigen::Matrix3d diag3(const std::array<double, 3>& a)
   return m;
 }
 
+inline double meanAngle(double a, double b)
+{
+  return std::atan2(std::sin(a) + std::sin(b), std::cos(a) + std::cos(b));
+}
+
 inline Eigen::Vector3d clampVec3(const Eigen::Vector3d& x, const Eigen::Vector3d& lim)
 {
   Eigen::Vector3d y;
@@ -122,6 +124,39 @@ inline Eigen::Matrix3d rpyToRot(const Eigen::Vector3d& rpy)
   return R;
 }
 
+inline Eigen::Matrix3d quatToRot(const Eigen::Vector4d& q_in)
+{
+  Eigen::Vector4d q = q_in;
+  const double n = q.norm();
+
+  if (n < 1.0e-9) {
+    return Eigen::Matrix3d::Identity();
+  }
+
+  q /= n;
+
+  const double w = q(0);
+  const double x = q(1);
+  const double y = q(2);
+  const double z = q(3);
+
+  Eigen::Matrix3d R;
+  R << 1.0 - 2.0 * (y * y + z * z),       2.0 * (x * y - w * z),       2.0 * (x * z + w * y),
+             2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z),       2.0 * (y * z - w * x),
+             2.0 * (x * z - w * y),       2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y);
+
+  return R;
+}
+
+inline Eigen::Vector3d rotToRpy(const Eigen::Matrix3d& R)
+{
+  Eigen::Vector3d rpy;
+  rpy << std::atan2(R(2, 1), R(2, 2)),
+         std::asin(std::clamp(-R(2, 0), -1.0, 1.0)),
+         std::atan2(R(1, 0), R(0, 0));
+  return rpy;
+}
+
 inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
 {
   Eigen::Vector3d b1 = heading;
@@ -147,178 +182,12 @@ inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
 }
 
 // Path utils =========================================================
-inline TargetCMD trackApple(double t)
-{
-  TargetCMD cmd;
-
-  if (t < params::HOVER_SEC) {
-    const double a = t / params::HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = params::APPLE_X - params::RADIUS;
-    cmd.y = params::APPLE_Y;
-    cmd.z = params::APPLE_Z * s;
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.0;
-
-    return cmd;
-  }
-
-  const double tm = t - params::HOVER_SEC;
-  const double w = 2.0 * M_PI / params::SCAN_PERIOD_SEC;
-  const double yaw_phase = w * tm;
-
-  cmd.x = params::APPLE_X - params::RADIUS * std::cos(yaw_phase);
-  cmd.y = params::APPLE_Y + params::RADIUS * std::sin(yaw_phase);
-  cmd.z = params::APPLE_Z + params::RADIUS * std::sin(params::THETA_MAX) * std::sin(yaw_phase);
-
-  const double dx = params::APPLE_X - cmd.x;
-  const double dy = params::APPLE_Y - cmd.y;
-
-  cmd.roll = 0.0;
-  cmd.pitch = -params::THETA_MAX * std::sin(yaw_phase);
-  cmd.yaw = std::atan2(dy, dx);
-
-  return cmd;
-}
-
-inline TargetCMD takeApple(double t)
-{
-  TargetCMD cmd;
-
-  if (t < params::HOVER_SEC) {
-    const double a = t / params::HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = params::APPLE_X - params::RADIUS;
-    cmd.y = params::APPLE_Y;
-    cmd.z = params::APPLE_Z * s;
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.0;
-
-    return cmd;
-  }
-
-  const double tm = t - params::HOVER_SEC;
-  const double cycle = params::SCAN_PERIOD_SEC;
-  const double tc = std::fmod(tm, cycle);
-
-  const double tilt_sec = 0.25 * cycle;
-  const double move_sec = 0.375 * cycle;
-
-  const double hover_x = params::APPLE_X - params::RADIUS;
-  const double hover_z = params::APPLE_Z;
-
-  const double theta = params::THETA_MAX;
-
-  const double tilted_x = params::APPLE_X - params::RADIUS * std::cos(theta);
-  const double tilted_z = params::APPLE_Z + params::RADIUS * std::sin(theta);
-
-  const double approach_dist = params::RADIUS * 0.5;
-
-  const double near_x = tilted_x + approach_dist * std::cos(theta);
-  const double near_z = tilted_z - approach_dist * std::sin(theta);
-
-  cmd.y = params::APPLE_Y;
-  cmd.roll = 0.0;
-  cmd.yaw = 0.0;
-
-  if (tc < tilt_sec) {
-    const double a = tc / tilt_sec;
-    const double s = a * a * (3.0 - 2.0 * a);
-    const double th = theta * s;
-
-    cmd.x = params::APPLE_X - params::RADIUS * std::cos(th);
-    cmd.z = params::APPLE_Z + params::RADIUS * std::sin(th);
-    cmd.pitch = -th;
-
-    return cmd;
-  }
-
-  if (tc < tilt_sec + move_sec) {
-    const double a = (tc - tilt_sec) / move_sec;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = tilted_x + (near_x - tilted_x) * s;
-    cmd.z = tilted_z + (near_z - tilted_z) * s;
-    cmd.pitch = -theta;
-
-    return cmd;
-  }
-
-  {
-    const double a = (tc - tilt_sec - move_sec) / move_sec;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = near_x + (tilted_x - near_x) * s;
-    cmd.z = near_z + (tilted_z - near_z) * s;
-    cmd.pitch = -theta;
-
-    return cmd;
-  }
-}
-
-inline TargetCMD positionTuningPath(double t)
+inline TargetCMD posPath(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double SEG_SEC = 1.0;
-  static constexpr double XY = 0.5;
-  static constexpr double Z = 3.0;
-
-  TargetCMD cmd;
-
-  if (t < HOVER_SEC) {
-    const double a = t / HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = 0.0;
-    cmd.y = 0.0;
-    cmd.z = Z * s;
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.0;
-
-    return cmd;
-  }
-
-  const double tm = t - HOVER_SEC;
-  const int phase = static_cast<int>(std::floor(tm / SEG_SEC)) % 4;
-
-  if (phase == 0) {
-    cmd.x = XY;
-    cmd.y = XY;
-  }
-  else if (phase == 1) {
-    cmd.x = -XY;
-    cmd.y = XY;
-  }
-  else if (phase == 2) {
-    cmd.x = -XY;
-    cmd.y = -XY;
-  }
-  else {
-    cmd.x = XY;
-    cmd.y = -XY;
-  }
-
-  cmd.z = Z;
-  cmd.roll = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw = 0.0;
-
-  return cmd;
-}
-
-inline TargetCMD attitudeTuningPath(double t)
-{
-  static constexpr double HOVER_SEC = 3.0;
-  static constexpr double PITCH_SEC = 10.0;
-  static constexpr double YAW_SEC = 30.0;
+  static constexpr double SEG_SEC = 5.0;
+  static constexpr double XY = 0.0;
   static constexpr double Z = 1.0;
-  static constexpr double PITCH_AMP = 70.0 * M_PI / 180.0;
-  static constexpr double YAW_AMP = 179.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
@@ -336,75 +205,56 @@ inline TargetCMD attitudeTuningPath(double t)
     return cmd;
   }
 
-  const double tm = t - HOVER_SEC;
-  const double cycle = PITCH_SEC + YAW_SEC;
-  const double tc = std::fmod(tm, cycle);
+  const auto smooth = [](double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
+  };
 
-  cmd.x = 0.0;
-  cmd.y = 0.0;
+  const double corners[4][2] = {
+    { XY,  XY},
+    {-XY,  XY},
+    {-XY, -XY},
+    { XY, -XY},
+  };
+
+  const double tm = t - HOVER_SEC;
+  double x0 = 0.0;
+  double y0 = 0.0;
+  double x1 = corners[0][0];
+  double y1 = corners[0][1];
+  double seg_t = tm;
+
+  if (tm >= SEG_SEC) {
+    const double loop_t = tm - SEG_SEC;
+    const int phase = static_cast<int>(std::floor(loop_t / SEG_SEC)) % 4;
+    const int next_phase = (phase + 1) % 4;
+
+    x0 = corners[phase][0];
+    y0 = corners[phase][1];
+    x1 = corners[next_phase][0];
+    y1 = corners[next_phase][1];
+    seg_t = std::fmod(loop_t, SEG_SEC);
+  }
+
+  const double s = smooth(seg_t / SEG_SEC);
+
+  cmd.x = x0 + (x1 - x0) * s;
+  cmd.y = y0 + (y1 - y0) * s;
   cmd.z = Z;
   cmd.roll = 0.0;
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  if (tc < PITCH_SEC) {
-    const double w = 2.0 * M_PI / PITCH_SEC;
-    cmd.pitch = PITCH_AMP * std::sin(w * tc);
-  }
-  else {
-    const double ty = tc - PITCH_SEC;
-    const double w = 2.0 * M_PI / YAW_SEC;
-    cmd.yaw = YAW_AMP * std::sin(w * ty);
-  }
-
   return cmd;
 }
 
-inline TargetCMD agilePath(double t)
-{
-  TargetCMD cmd;
-
-  if (t < params::HOVER_SEC) {
-    const double a = t / params::HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = 0.0;
-    cmd.y = 0.0;
-    cmd.z = params::APPLE_Z * s;
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.0;
-
-    return cmd;
-  }
-
-  const double tm = t - params::HOVER_SEC;
-  const double w = 2.0 * M_PI / params::SCAN_PERIOD_SEC;
-  const double p = w * tm;
-
-  cmd.x = params::RADIUS * std::sin(p);
-  cmd.y = params::RADIUS * std::sin(p) * std::cos(p);
-  cmd.z = params::APPLE_Z + params::RADIUS * std::sin(params::THETA_MAX) * std::sin(p);
-
-  cmd.roll = params::ROLL_MAX * std::sin(p);
-  cmd.pitch = params::THETA_MAX * std::sin(p + 0.5 * M_PI);
-  cmd.yaw = 0.5 * M_PI * std::sin(p);
-
-  return cmd;
-}
-
-inline TargetCMD positionTrack(double t)
+inline TargetCMD attPath(double t)
 {
   static constexpr double HOVER_SEC = 1.0;
+  static constexpr double TUNE_SEC = 60.0;
   static constexpr double Z = 1.0;
-  static constexpr double distance_x = 1.0; // [m]
-  static constexpr double distance_y = 1.0; // [m]
-
-  static constexpr double vel_x = 1.0; // [m/s]
-  static constexpr double vel_y = 1.0; // [m/s]
-
-  const double X_SEG_SEC = distance_x / vel_x;
-  const double Y_SEG_SEC = distance_y / vel_y;
+  static constexpr double ROLL_AMP = 20.0 * M_PI / 180.0;
+  static constexpr double PITCH_AMP = 60.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
@@ -416,298 +266,725 @@ inline TargetCMD positionTrack(double t)
     cmd.y = 0.0;
     cmd.z = Z * s;
     cmd.roll = 0.0;
-    cmd.pitch = 60.0 * 3.141592/180.0 * s;
+    cmd.pitch = 0.0;
     cmd.yaw = 0.0;
 
     return cmd;
   }
 
-  const double tm = t - HOVER_SEC;
-  const double cycle = 2.0 * X_SEG_SEC + 2.0 * Y_SEG_SEC;
-  const double tc = std::fmod(tm, cycle);
+  const double tm = std::fmod(t - HOVER_SEC, 3.0 * TUNE_SEC);
+  const double axis_t = std::fmod(tm, TUNE_SEC);
+  const double w = 2.0 * M_PI / TUNE_SEC;
 
   cmd.x = 0.0;
   cmd.y = 0.0;
   cmd.z = Z;
   cmd.roll = 0.0;
-  cmd.pitch = 60.0 * 3.141592/180.0;
+  cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  if (tc < X_SEG_SEC) {
-    const double a = tc / X_SEG_SEC;
+  if (tm < TUNE_SEC) {
+    cmd.pitch = PITCH_AMP * std::sin(w * axis_t);
+  } else if (tm < 2.0 * TUNE_SEC) {
+    cmd.roll = ROLL_AMP * std::sin(w * axis_t);
+  }
+
+  return cmd;
+}
+
+inline TargetCMD stepAttPath(double t)
+{
+  static constexpr double HOVER_SEC = 2.0;
+  static constexpr double ZERO_HOLD_SEC = 2.0;
+  static constexpr double RAMP_SEC = 1.0;
+  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double Z = 1.0;
+
+  static constexpr double SWITCH_DEG = 80.0;
+  static constexpr double FIRST_STEP_DEG = 40.0;
+  static constexpr double SECOND_STEP_DEG = 10.0;
+  static constexpr double MAX_DEG = 89.0;
+  static constexpr double DEG2RAD = M_PI / 180.0;
+
+  static constexpr int FIRST_STAGE_COUNT =
+      static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
+
+  TargetCMD cmd;
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  if (t < HOVER_SEC) {
+    const double a = t / HOVER_SEC;
     const double s = a * a * (3.0 - 2.0 * a);
 
-    cmd.x = distance_x * s;
+    cmd.z = Z * s;
+
+    return cmd;
+  }
+
+  const double tm = t - HOVER_SEC;
+
+  if (tm < ZERO_HOLD_SEC) {
+    return cmd;
+  }
+
+  const double ts = tm - ZERO_HOLD_SEC;
+  const double stage_sec = RAMP_SEC + HOLD_SEC;
+  const int stage = static_cast<int>(std::floor(ts / stage_sec));
+  const double stage_t = std::fmod(ts, stage_sec);
+
+  double start_deg;
+  double target_deg;
+
+  if (stage < FIRST_STAGE_COUNT) {
+    start_deg = stage * FIRST_STEP_DEG;
+    target_deg = start_deg + FIRST_STEP_DEG;
+  }
+  else {
+    const int second_stage = stage - FIRST_STAGE_COUNT;
+
+    start_deg =
+        SWITCH_DEG + second_stage * SECOND_STEP_DEG;
+
+    target_deg =
+        start_deg + SECOND_STEP_DEG;
+  }
+
+  start_deg = std::min(start_deg, MAX_DEG);
+  target_deg = std::min(target_deg, MAX_DEG);
+
+  const double start_angle = start_deg * DEG2RAD;
+  const double target_angle = target_deg * DEG2RAD;
+
+  if (start_deg >= MAX_DEG) {
+    cmd.pitch = MAX_DEG * DEG2RAD;
+    return cmd;
+  }
+
+  if (stage_t < RAMP_SEC) {
+    const double a = stage_t / RAMP_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+
+    cmd.pitch =
+        start_angle + (target_angle - start_angle) * s;
+  }
+  else {
+    cmd.pitch = target_angle;
+  }
+
+  return cmd;
+}
+
+inline TargetCMD throughWallPath(double t)
+{
+  static constexpr double TAKEOFF_SEC = 1.0;
+  static constexpr double STRAIGHT_SEC = 3.0;
+  static constexpr double TILT_SEC = 3.0;
+  static constexpr double DIAG_SEC = 3.0;
+  static constexpr double EXIT_SEC = 2.0;
+
+  static constexpr double Z0 = 1.0;
+  static constexpr double X_TURN = 1.5;
+  static constexpr double X_DIAG_END = 3.0;
+  static constexpr double Z_DIAG_END = 2.5;
+  static constexpr double X_END = 4.0;
+
+  static constexpr double PITCH_45 = M_PI / 4.0;
+
+  static constexpr double ONE_WAY_SEC =
+      STRAIGHT_SEC + TILT_SEC + DIAG_SEC + TILT_SEC + EXIT_SEC;
+
+  static constexpr double CYCLE_SEC = 2.0 * ONE_WAY_SEC;
+
+  const auto smooth = [](double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
+  };
+
+  TargetCMD cmd;
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = 0.0;
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  // Initial takeoff only once
+  if (t < TAKEOFF_SEC) {
+    const double s = smooth(t / TAKEOFF_SEC);
+    cmd.z = Z0 * s;
+    return cmd;
+  }
+
+  // Repeat 0 -> 4 -> 0
+  double tm = std::fmod(t - TAKEOFF_SEC, CYCLE_SEC);
+
+  // =========================================================
+  // Forward : x = 0 -> 4
+  // =========================================================
+  if (tm < ONE_WAY_SEC) {
+
+    if (tm < STRAIGHT_SEC) {
+      const double s = smooth(tm / STRAIGHT_SEC);
+      cmd.x = X_TURN * s;
+      cmd.z = Z0;
+      return cmd;
+    }
+
+    tm -= STRAIGHT_SEC;
+
+    if (tm < TILT_SEC) {
+      const double s = smooth(tm / TILT_SEC);
+      cmd.x = X_TURN;
+      cmd.z = Z0;
+      cmd.pitch = PITCH_45 * s;
+      return cmd;
+    }
+
+    tm -= TILT_SEC;
+
+    if (tm < DIAG_SEC) {
+      const double s = smooth(tm / DIAG_SEC);
+      cmd.x = X_TURN + (X_DIAG_END - X_TURN) * s;
+      cmd.z = Z0 + (Z_DIAG_END - Z0) * s;
+      cmd.pitch = PITCH_45;
+      return cmd;
+    }
+
+    tm -= DIAG_SEC;
+
+    if (tm < TILT_SEC) {
+      const double s = smooth(tm / TILT_SEC);
+      cmd.x = X_DIAG_END;
+      cmd.z = Z_DIAG_END;
+      cmd.pitch = PITCH_45 * (1.0 - s);
+      return cmd;
+    }
+
+    tm -= TILT_SEC;
+
+    const double s = smooth(tm / EXIT_SEC);
+    cmd.x = X_DIAG_END + (X_END - X_DIAG_END) * s;
+    cmd.z = Z_DIAG_END;
+    return cmd;
+  }
+
+  // =========================================================
+  // Return : x = 4 -> 0
+  // =========================================================
+  tm -= ONE_WAY_SEC;
+
+  // 4.0 -> 3.0
+  if (tm < EXIT_SEC) {
+    const double s = smooth(tm / EXIT_SEC);
+    cmd.x = X_END + (X_DIAG_END - X_END) * s;
+    cmd.z = Z_DIAG_END;
+    return cmd;
+  }
+
+  tm -= EXIT_SEC;
+
+  // At x = 3.0, tilt 0 -> 45 deg
+  if (tm < TILT_SEC) {
+    const double s = smooth(tm / TILT_SEC);
+    cmd.x = X_DIAG_END;
+    cmd.z = Z_DIAG_END;
+    cmd.pitch = PITCH_45 * s;
+    return cmd;
+  }
+
+  tm -= TILT_SEC;
+
+  // Diagonal backward
+  if (tm < DIAG_SEC) {
+    const double s = smooth(tm / DIAG_SEC);
+    cmd.x = X_DIAG_END + (X_TURN - X_DIAG_END) * s;
+    cmd.z = Z_DIAG_END + (Z0 - Z_DIAG_END) * s;
+    cmd.pitch = PITCH_45;
+    return cmd;
+  }
+
+  tm -= DIAG_SEC;
+
+  // At x = 1.5, tilt 45 -> 0 deg
+  if (tm < TILT_SEC) {
+    const double s = smooth(tm / TILT_SEC);
+    cmd.x = X_TURN;
+    cmd.z = Z0;
+    cmd.pitch = PITCH_45 * (1.0 - s);
+    return cmd;
+  }
+
+  tm -= TILT_SEC;
+
+  // 1.5 -> 0.0
+  const double s = smooth(tm / STRAIGHT_SEC);
+  cmd.x = X_TURN * (1.0 - s);
+  cmd.z = Z0;
+
+  return cmd;
+}
+
+inline TargetCMD circularWallPath(double t)
+{
+  static constexpr double R = 2.5;
+  static constexpr double Z = 1.2;
+
+  static constexpr double ORIENT_SEC = 2.0;
+  static constexpr double RAMP_SEC = 3.0;
+  static constexpr double LAP_SEC = 14.0;
+
+  static constexpr double OMEGA = 2.0 * M_PI / LAP_SEC;
+
+  const auto smooth = [](double a) {
+    a = std::clamp(a, 0.0, 1.0);
+    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
+  };
+
+  TargetCMD cmd;
+
+  cmd.x = 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = 0.0;
+
+  if (t < ORIENT_SEC) {
+    const double s = smooth(t / ORIENT_SEC);
+
+    cmd.x = 0.0;
     cmd.y = 0.0;
+    cmd.z = Z;
+
+    cmd.roll = 0.0;
+    cmd.pitch = 0.0;
+    cmd.yaw = 0.5 * M_PI * s;
 
     return cmd;
   }
 
-  if (tc < X_SEG_SEC + Y_SEG_SEC) {
-    const double a = (tc - X_SEG_SEC) / Y_SEG_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
+  t -= ORIENT_SEC;
 
-    cmd.x = distance_x;
-    cmd.y = distance_y * s;
+  double phase = 0.0;
+  if (t < RAMP_SEC) {
+    const double u = std::clamp(t / RAMP_SEC, 0.0, 1.0);
+    const double phase_integral =
+        2.5 * std::pow(u, 4)
+      - 3.0 * std::pow(u, 5)
+      +       std::pow(u, 6);
 
-    return cmd;
+    phase = OMEGA * RAMP_SEC * phase_integral;
+  }
+  else {
+    phase = OMEGA * (t - 0.5 * RAMP_SEC);
   }
 
-  if (tc < 2.0 * X_SEG_SEC + Y_SEG_SEC) {
-    const double a = (tc - X_SEG_SEC - Y_SEG_SEC) / X_SEG_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
+  cmd.x = R * (1.0 - std::cos(phase));
+  cmd.y = R * std::sin(phase);
+  cmd.z = Z;
 
-    cmd.x = distance_x * (1.0 - s);
-    cmd.y = distance_y;
+  // Tangential heading
+  const double yaw = 0.5 * M_PI - phase;
 
-    return cmd;
-  }
+  cmd.roll = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw = std::atan2(std::sin(yaw), std::cos(yaw));
 
+  return cmd;
+}
+
+inline TargetCMD stepPath(double t)
+{
+  static constexpr double HOVER_SEC = 3.0;
+  static constexpr double HOLD_SEC  = 3.0;
+
+  static constexpr double X_delta = 0.5;
+  static constexpr double Z = 1.0;
+
+  TargetCMD cmd;
+
+  if (t < HOVER_SEC) 
   {
-    const double a = (tc - 2.0 * X_SEG_SEC - Y_SEG_SEC) / Y_SEG_SEC;
+    const double a = t / HOVER_SEC;
     const double s = a * a * (3.0 - 2.0 * a);
 
     cmd.x = 0.0;
-    cmd.y = distance_y * (1.0 - s);
+    cmd.y = 0.0;
+    cmd.z = Z * s;
+
+    cmd.roll  = 0.0;
+    cmd.pitch = 0.0;
+    cmd.yaw   = 0.0;
 
     return cmd;
   }
+
+  cmd.x = t - HOVER_SEC < HOLD_SEC ? X_delta : 0.0;
+  cmd.y = 0.0;
+  cmd.z = Z;
+
+  cmd.roll  = 0.0;
+  cmd.pitch = 0.0;
+  cmd.yaw   = 0.0;
+
+  return cmd;
 }
 
 // Control Allocation utils ===========================================
-inline AllocationOutput allocation_P2T2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& theta_measured, const Eigen::Vector4d& phi_measured)
+inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
 {
-  using Vector6d = Eigen::Matrix<double, 6, 1>;
-  using Vector8d = Eigen::Matrix<double, 8, 1>;
-  using Matrix68d = Eigen::Matrix<double, 6, 8>;
+  const double force_norm = std::max(force_cmd.norm(), 1.0e-3);
+  Eigen::Vector3d force_dir;
+  if (force_norm > 1.0e-3) force_dir = force_cmd / force_norm;
+  else force_dir << 0.0, 0.0, -1.0;
 
-  const double theta_front = 0.5 * (theta_measured(0) + theta_measured(3));
-  const double theta_back = 0.5 * (theta_measured(1) + theta_measured(2));
+  double beta_des = std::atan2(-force_dir(0), -force_dir(2));
+  double alpha_des = std::asin(std::clamp(force_dir(1), -1.0, 1.0));
 
-  const double phi14 = 0.5 * (phi_measured(0) + phi_measured(3));
-  const double phi23 = 0.5 * (phi_measured(1) + phi_measured(2));
+  beta_des = std::clamp(beta_des, -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
+  alpha_des = std::clamp(alpha_des, -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
 
-  const double front_ex = -std::sin(theta_front) * std::cos(phi14);
-  const double front_ey = std::sin(phi14);
-  const double front_ez = -std::cos(theta_front) * std::cos(phi14);
+  Eigen::Vector3d e_cmd;
+  e_cmd << -std::sin(beta_des) * std::cos(alpha_des),
+            std::sin(alpha_des),
+           -std::cos(beta_des) * std::cos(alpha_des);
 
-  const double back_ex = -std::sin(theta_back) * std::cos(phi23);
-  const double back_ey = std::sin(phi23);
-  const double back_ez = -std::cos(theta_back) * std::cos(phi23);
+  const double L = params::HB_L;
+  const double zeta  = params::HB_ZETA;
 
-  const double front_x = params::Lx - params::d * std::cos(phi14) * std::sin(theta_front);
-  const double front_y = params::d * std::sin(phi14);
+  Eigen::Matrix4d B;
+  Eigen::Vector4d Wrench;
 
-  const double back_x = -params::Lx - params::d * std::cos(phi23) * std::sin(theta_back);
-  const double back_y = params::d * std::sin(phi23);
+  Wrench << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_norm;
 
-  Matrix68d A;
-  A.setZero();
+  B <<
+                    L * e_cmd(2) + zeta * e_cmd(0),                     L * e_cmd(2) - zeta * e_cmd(0),                     -L * e_cmd(2) + zeta * e_cmd(0),                    -L * e_cmd(2) - zeta * e_cmd(0),
 
-  A(0, 2) = front_y;
-  A(0, 5) = back_y;
-  A(0, 6) = params::Ly * front_ez + params::zeta * front_ex;
-  A(0, 7) = params::Ly * back_ez - params::zeta * back_ex;
+                   -L * e_cmd(2) + zeta * e_cmd(1),                     L * e_cmd(2) - zeta * e_cmd(1),                      L * e_cmd(2) + zeta * e_cmd(1),                    -L * e_cmd(2) - zeta * e_cmd(1),
 
-  A(1, 2) = -front_x;
-  A(1, 5) = -back_x;
-  A(1, 6) = params::zeta * front_ey;
-  A(1, 7) = -params::zeta * back_ey;
+    L * e_cmd(1) - L * e_cmd(0) + zeta * e_cmd(2),    -L * e_cmd(1) - L * e_cmd(0) - zeta * e_cmd(2),     -L * e_cmd(1) + L * e_cmd(0) + zeta * e_cmd(2),     L * e_cmd(1) + L * e_cmd(0) - zeta * e_cmd(2),
 
-  A(2, 0) = -front_y;
-  A(2, 1) = front_x;
-  A(2, 3) = -back_y;
-  A(2, 4) = back_x;
-  A(2, 6) = -params::Ly * front_ex + params::zeta * front_ez;
-  A(2, 7) = -params::Ly * back_ex - params::zeta * back_ez;
+                                                1.0,                                                 1.0,                                                   1.0,                                                1.0;
 
-  A(3, 0) = 1.0;
-  A(3, 3) = 1.0;
 
-  A(4, 1) = 1.0;
-  A(4, 4) = 1.0;
-
-  A(5, 2) = 1.0;
-  A(5, 5) = 1.0;
-
-  Vector6d wrench;
-  wrench << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_cmd(0), force_cmd(1), force_cmd(2);
-
-  const Eigen::Matrix<double, 6, 6> H = A * A.transpose() + params::virtual_lambda * params::virtual_lambda * Eigen::Matrix<double, 6, 6>::Identity();
-  const Vector8d virtual_force = A.transpose() * H.ldlt().solve(wrench);
-
-  Eigen::Vector3d front_force;
-  Eigen::Vector3d back_force;
-
-  front_force << virtual_force(0), virtual_force(1), virtual_force(2);
-  back_force << virtual_force(3), virtual_force(4), virtual_force(5);
-
-  const double f_front = std::max(front_force.norm(), params::f_min);
-  const double f_back = std::max(back_force.norm(), params::f_min);
-
-  Eigen::Vector3d front_dir = front_force / f_front;
-  Eigen::Vector3d back_dir = back_force / f_back;
-
-  if (front_force.norm() <= params::f_min) front_dir << 0.0, 0.0, -1.0;
-  if (back_force.norm() <= params::f_min) back_dir << 0.0, 0.0, -1.0;
-
-  double theta1 = std::atan2(-front_dir(0), -front_dir(2));
-  double theta2 = std::atan2(-back_dir(0), -back_dir(2));
-  double phi14_cmd = std::asin(std::clamp(front_dir(1), -1.0, 1.0));
-  double phi23_cmd = std::asin(std::clamp(back_dir(1), -1.0, 1.0));
-
-  theta1 = std::clamp(theta1, -params::theta_limit_rad, params::theta_limit_rad);
-  theta2 = std::clamp(theta2, -params::theta_limit_rad, params::theta_limit_rad);
-  phi14_cmd = std::clamp(phi14_cmd, -params::phi_limit_rad, params::phi_limit_rad);
-  phi23_cmd = std::clamp(phi23_cmd, -params::phi_limit_rad, params::phi_limit_rad);
-
-  const double df14 = std::clamp(virtual_force(6), -f_front + params::f_min, f_front - params::f_min);
-  const double df23 = std::clamp(virtual_force(7), -f_back + params::f_min, f_back - params::f_min);
+  const Eigen::Matrix4d H = B * B.transpose() + params::HB_VIRTUAL_LAMBDA * params::HB_VIRTUAL_LAMBDA * Eigen::Matrix4d::Identity();
+  const Eigen::Vector4d thrust_raw = B.transpose() * H.ldlt().solve(Wrench);
 
   AllocationOutput out;
 
-  out.f(0) = std::clamp(0.5 * (f_front + df14), params::f_cmd_min, params::f_cmd_max);
-  out.f(3) = std::clamp(0.5 * (f_front - df14), params::f_cmd_min, params::f_cmd_max);
-  out.f(1) = std::clamp(0.5 * (f_back + df23), params::f_cmd_min, params::f_cmd_max);
-  out.f(2) = std::clamp(0.5 * (f_back - df23), params::f_cmd_min, params::f_cmd_max);
+  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(thrust_raw(i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
 
-  out.theta(0) = theta1;
-  out.theta(1) = theta2;
-  out.theta(2) = theta2;
-  out.theta(3) = theta1;
-
-  out.phi(0) = phi14_cmd;
-  out.phi(1) = phi23_cmd;
-  out.phi(2) = phi23_cmd;
-  out.phi(3) = phi14_cmd;
+  out.beta << beta_des, beta_des;
+  out.alpha.setConstant(alpha_des);
 
   return out;
 }
 
-inline AllocationOutput allocation_P4T4(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& theta_measured, const Eigen::Vector4d& phi_measured)
+inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector2d& beta_ref, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
+{
+  using Vector6d = Eigen::Matrix<double, 6, 1>;
+  using Vector10d = Eigen::Matrix<double, 10, 1>;
+  using Matrix66d = Eigen::Matrix<double, 6, 6>;
+  using Matrix610d = Eigen::Matrix<double, 6, 10>;
+  using Matrix106d = Eigen::Matrix<double, 10, 6>;
+  using Matrix1010d = Eigen::Matrix<double, 10, 10>;
+
+  static bool initialized = false;
+  static AllocationOutput previous_cmd;
+
+  if (!initialized)
+  {
+    previous_cmd.alpha = alpha_measured;
+    previous_cmd.beta = beta_ref;
+    previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX));
+    initialized = true;
+  }
+
+  // q = [alpha1 alpha2 alpha3 alpha4 beta1 beta2 f1 f2 f3 f4]^T
+  Vector10d q;
+  q.segment<4>(0) = servo_read ? alpha_measured : previous_cmd.alpha;
+  q.segment<2>(4) = servo_read ? beta_measured : previous_cmd.beta;
+  q.segment<4>(6) = previous_cmd.f;
+
+  const double alpha1 = q(0);
+  const double alpha2 = q(1);
+  const double alpha3 = q(2);
+  const double alpha4 = q(3);
+  const double beta1 = q(4);
+  const double beta2 = q(5);
+  const double f1 = q(6);
+  const double f2 = q(7);
+  const double f3 = q(8);
+  const double f4 = q(9);
+
+  const Eigen::Vector3d r1(params::HB_L, params::HB_L, 0.0);
+  const Eigen::Vector3d r2(-params::HB_L, params::HB_L, 0.0);
+  const Eigen::Vector3d r3(-params::HB_L, -params::HB_L, 0.0);
+  const Eigen::Vector3d r4(params::HB_L, -params::HB_L, 0.0);
+
+  const Eigen::Vector3d e1(-std::sin(beta1) * std::cos(alpha1), std::sin(alpha1), -std::cos(beta1) * std::cos(alpha1));
+  const Eigen::Vector3d e2(-std::sin(beta2) * std::cos(alpha2), std::sin(alpha2), -std::cos(beta2) * std::cos(alpha2));
+  const Eigen::Vector3d e3(-std::sin(beta2) * std::cos(alpha3), std::sin(alpha3), -std::cos(beta2) * std::cos(alpha3));
+  const Eigen::Vector3d e4(-std::sin(beta1) * std::cos(alpha4), std::sin(alpha4), -std::cos(beta1) * std::cos(alpha4));
+
+  const Eigen::Vector3d de_dalpha1(std::sin(beta1) * std::sin(alpha1), std::cos(alpha1), std::cos(beta1) * std::sin(alpha1));
+  const Eigen::Vector3d de_dalpha2(std::sin(beta2) * std::sin(alpha2), std::cos(alpha2), std::cos(beta2) * std::sin(alpha2));
+  const Eigen::Vector3d de_dalpha3(std::sin(beta2) * std::sin(alpha3), std::cos(alpha3), std::cos(beta2) * std::sin(alpha3));
+  const Eigen::Vector3d de_dalpha4(std::sin(beta1) * std::sin(alpha4), std::cos(alpha4), std::cos(beta1) * std::sin(alpha4));
+
+  const Eigen::Vector3d de_dbeta1(-std::cos(beta1) * std::cos(alpha1), 0.0, std::sin(beta1) * std::cos(alpha1));
+  const Eigen::Vector3d de_dbeta2(-std::cos(beta2) * std::cos(alpha2), 0.0, std::sin(beta2) * std::cos(alpha2));
+  const Eigen::Vector3d de_dbeta3(-std::cos(beta2) * std::cos(alpha3), 0.0, std::sin(beta2) * std::cos(alpha3));
+  const Eigen::Vector3d de_dbeta4(-std::cos(beta1) * std::cos(alpha4), 0.0, std::sin(beta1) * std::cos(alpha4));
+
+  const Eigen::Vector3d m_e1 = r1.cross(e1) + params::HB_ZETA * e1;
+  const Eigen::Vector3d m_e2 = r2.cross(e2) - params::HB_ZETA * e2;
+  const Eigen::Vector3d m_e3 = r3.cross(e3) + params::HB_ZETA * e3;
+  const Eigen::Vector3d m_e4 = r4.cross(e4) - params::HB_ZETA * e4;
+
+  const Eigen::Vector3d m_alpha1 = r1.cross(de_dalpha1) + params::HB_ZETA * de_dalpha1;
+  const Eigen::Vector3d m_alpha2 = r2.cross(de_dalpha2) - params::HB_ZETA * de_dalpha2;
+  const Eigen::Vector3d m_alpha3 = r3.cross(de_dalpha3) + params::HB_ZETA * de_dalpha3;
+  const Eigen::Vector3d m_alpha4 = r4.cross(de_dalpha4) - params::HB_ZETA * de_dalpha4;
+
+  const Eigen::Vector3d m_beta1 = r1.cross(de_dbeta1) + params::HB_ZETA * de_dbeta1;
+  const Eigen::Vector3d m_beta2 = r2.cross(de_dbeta2) - params::HB_ZETA * de_dbeta2;
+  const Eigen::Vector3d m_beta3 = r3.cross(de_dbeta3) + params::HB_ZETA * de_dbeta3;
+  const Eigen::Vector3d m_beta4 = r4.cross(de_dbeta4) - params::HB_ZETA * de_dbeta4;
+
+  Vector6d W_now;
+  W_now.head<3>() = f1 * m_e1 + f2 * m_e2 + f3 * m_e3 + f4 * m_e4;
+  W_now.tail<3>() = f1 * e1 + f2 * e2 + f3 * e3 + f4 * e4;
+
+  Matrix610d J = Matrix610d::Zero();
+  J.col(0) << f1 * m_alpha1, f1 * de_dalpha1;
+  J.col(1) << f2 * m_alpha2, f2 * de_dalpha2;
+  J.col(2) << f3 * m_alpha3, f3 * de_dalpha3;
+  J.col(3) << f4 * m_alpha4, f4 * de_dalpha4;
+  J.col(4) << f1 * m_beta1 + f4 * m_beta4, f1 * de_dbeta1 + f4 * de_dbeta4;
+  J.col(5) << f2 * m_beta2 + f3 * m_beta3, f2 * de_dbeta2 + f3 * de_dbeta3;
+  J.col(6) << m_e1, e1;
+  J.col(7) << m_e2, e2;
+  J.col(8) << m_e3, e3;
+  J.col(9) << m_e4, e4;
+
+  Vector6d W_des;
+  W_des << moment_cmd, force_cmd;
+
+  // (7) W_dot_des = Kj (W_des - W(q))
+  const Vector6d W_dot_des = params::HB_KJ * (W_des - W_now);
+
+  const Matrix66d JWJ = J * params::HB_W_INV * J.transpose();
+  const Matrix66d JWJ_inv = JWJ.completeOrthogonalDecomposition().solve(Matrix66d::Identity());
+  const Matrix106d J_pesudo = params::HB_W_INV * J.transpose() * JWJ_inv;
+
+  Vector10d q_dot_star = Vector10d::Zero();
+  for (int i = 0; i < 4; ++i) q_dot_star(i)  = params::HB_NULL_K[0] * (0.0                    - q(i));
+  for (int i = 4; i < 6; ++i) q_dot_star(i)  = params::HB_NULL_K[1] * (beta_ref(i-4)          - q(i));
+  for (int i = 6; i < 10; ++i) q_dot_star(i) = params::HB_NULL_K[2] * (force_cmd.norm() / 4.0 - q(i));
+
+  // q_dot = J^# W_dot_des + (I - J^# J) q_dot_star
+  const Vector10d q_dot_primary = J_pesudo * W_dot_des;
+
+  const Vector10d q_dot_nullspace = (Matrix1010d::Identity() - J_pesudo * J) * q_dot_star;
+
+  Vector10d q_dot_max;
+  for (int i = 0; i < 4; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
+  for (int i = 4; i < 6; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
+  for (int i = 6; i < 10; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
+
+  const auto nullspace_interval = [&](double primary_scale, double& lower, double& upper)
+  {
+    lower = 0.0;
+    upper = 1.0;
+
+    for (int i = 0; i < 10; ++i)
+    {
+      const double primary_rate = primary_scale * q_dot_primary(i);
+      if (std::abs(q_dot_nullspace(i)) < 1.0e-12)
+      {
+        if (std::abs(primary_rate) > q_dot_max(i) + 1.0e-12) return false;
+        continue;
+      }
+
+      double bound_1 = (-q_dot_max(i) - primary_rate) / q_dot_nullspace(i);
+      double bound_2 = ( q_dot_max(i) - primary_rate) / q_dot_nullspace(i);
+      if (bound_1 > bound_2) std::swap(bound_1, bound_2);
+
+      lower = std::max(lower, bound_1);
+      upper = std::min(upper, bound_2);
+      if (lower > upper + 1.0e-12) return false;
+    }
+
+    return true;
+  };
+
+  double primary_scale = 1.0;
+  double nullspace_lower = 0.0;
+  double nullspace_upper = 1.0;
+  if (!nullspace_interval(primary_scale, nullspace_lower, nullspace_upper))
+  {
+    double feasible_scale = 0.0;
+    double infeasible_scale = 1.0;
+    for (int iteration = 0; iteration < 40; ++iteration)
+    {
+      const double candidate = 0.5 * (feasible_scale + infeasible_scale);
+      double candidate_lower = 0.0;
+      double candidate_upper = 1.0;
+      if (nullspace_interval(candidate, candidate_lower, candidate_upper))
+      {
+        feasible_scale = candidate;
+      }
+      else
+      {
+        infeasible_scale = candidate;
+      }
+    }
+
+    primary_scale = feasible_scale;
+    nullspace_interval(primary_scale, nullspace_lower, nullspace_upper);
+  }
+
+  const double nullspace_scale = std::clamp(nullspace_upper, 0.0, 1.0);
+  const Vector10d q_dot = primary_scale * q_dot_primary + nullspace_scale * q_dot_nullspace;
+
+  Vector10d q_cmd;
+  for (int i = 0; i < 6; ++i) q_cmd(i) = q(i) + params::HB_Q_CMD_TAU_SERVO * q_dot(i);
+  for (int i = 6; i < 10; ++i) q_cmd(i) = q(i) + std::max(dt, 1.0e-6) * q_dot(i);
+
+  AllocationOutput out;
+  for (int i = 0; i < 4; ++i) out.alpha(i) = std::clamp(q_cmd(i), -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
+  for (int i = 0; i < 2; ++i) out.beta(i) = std::clamp(q_cmd(4 + i), -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
+  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(q_cmd(6 + i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
+  out.primary_scale = primary_scale;
+  out.nullspace_scale = nullspace_scale;
+
+  previous_cmd = out;
+  return out;
+}
+
+inline HexaAllocationOutput allocation_hexa_a6_ada(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Matrix<double, 6, 1>& d, const Eigen::Vector3d& att_cmd, const Eigen::Matrix<double, 6, 1>& alpha_measured, bool servo_read, double dt)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
   using Vector12d = Eigen::Matrix<double, 12, 1>;
+  using Matrix66d = Eigen::Matrix<double, 6, 6>;
   using Matrix612d = Eigen::Matrix<double, 6, 12>;
+  using Matrix126d = Eigen::Matrix<double, 12, 6>;
+  using Matrix1212d = Eigen::Matrix<double, 12, 12>;
 
-  Matrix612d A;
-  A.setZero();
+  static bool initialized = false;
+  static HexaAllocationOutput previous_cmd;
+  static Vector6d rms_gradient = Vector6d::Zero();
 
-  for (int i = 0; i < 4; ++i) {
-    const double x_sign = (i == 0 || i == 3) ? 1.0 : -1.0;
-    const double y_sign = (i == 0 || i == 1) ? 1.0 : -1.0;
-    const double spin = (i % 2 == 0) ? 1.0 : -1.0;
-
-    const double theta = theta_measured(i);
-    const double phi = phi_measured(i);
-
-    Eigen::Vector3d r;
-    r << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), 0.0;
-
-    Eigen::Matrix3d B;
-    B << 0.0, -r(2), r(1),
-         r(2), 0.0, -r(0),
-         -r(1), r(0), 0.0;
-
-    B += spin * params::zeta * Eigen::Matrix3d::Identity();
-
-    A.block<3, 3>(0, 3 * i) = B;
-    A.block<3, 3>(3, 3 * i) = Eigen::Matrix3d::Identity();
+  if (!initialized)
+  {
+    previous_cmd.alpha = alpha_measured;
+    previous_cmd.f.setConstant(force_cmd.norm() / 6.0);
+    initialized = true;
   }
 
-  Vector6d wrench;
-  wrench << moment_cmd(0), moment_cmd(1), moment_cmd(2), force_cmd(0), force_cmd(1), force_cmd(2);
+  // q = [alpha_0 ... alpha_5 f_0 ... f_5]^T, where f_i is one coaxial arm pair's total thrust.
+  Vector12d q;
+  q.segment<6>(0) = servo_read ? alpha_measured : previous_cmd.alpha;
+  q.segment<6>(6) = previous_cmd.f;
 
-  const Eigen::Matrix<double, 6, 6> H = A * A.transpose() + params::virtual_lambda * params::virtual_lambda * Eigen::Matrix<double, 6, 6>::Identity();
-  const Vector12d virtual_force = A.transpose() * H.ldlt().solve(wrench);
+  // XML arms transformed from MuJoCo z-up to the controller's z-down body frame.
+  static const std::array<double, 6> arm_yaw = {
+    0.5 * M_PI, -0.5 * M_PI, -M_PI / 6.0,
+    5.0 * M_PI / 6.0, M_PI / 6.0, -5.0 * M_PI / 6.0
+  };
+  static const std::array<double, 6> reaction_sign = {1.0, -1.0, 1.0, -1.0, -1.0, 1.0};
 
-  AllocationOutput out;
+  Vector6d W_now = Vector6d::Zero();
+  Matrix612d J = Matrix612d::Zero();
 
-  for (int i = 0; i < 4; ++i) {
-    Eigen::Vector3d force_i;
-    force_i << virtual_force(3 * i + 0), virtual_force(3 * i + 1), virtual_force(3 * i + 2);
+  for (int i = 0; i < 6; ++i) {
+    const double alpha = q(i);
+    const double f = q(6 + i);
+    const double yaw = arm_yaw[i];
+    const double sa = std::sin(alpha);
+    const double ca = std::cos(alpha);
 
-    const double f_raw = force_i.norm();
-    const double f = std::max(f_raw, params::f_min);
+    const Eigen::Vector3d r_i(
+      params::HEXA_L * std::cos(yaw),
+      params::HEXA_L * std::sin(yaw),
+      0.0);
+    const Eigen::Vector3d e_i(-std::sin(yaw) * sa, std::cos(yaw) * sa, -ca);
+    const Eigen::Vector3d de_dalpha(-std::sin(yaw) * ca, std::cos(yaw) * ca, sa);
 
-    Eigen::Vector3d dir = force_i / f;
-    if (f_raw <= params::f_min) dir << 0.0, 0.0, -1.0;
+    const auto wrench_direction = [&](const Eigen::Vector3d& v) {
+      Vector6d D;
+      D.segment<3>(0) = r_i.cross(v) + reaction_sign[i] * params::HEXA_ZETA * v;
+      D.segment<3>(3) = v;
+      return D;
+    };
 
-    double theta = std::atan2(-dir(0), -dir(2));
-    double phi = std::asin(std::clamp(dir(1), -1.0, 1.0));
-
-    theta = std::clamp(theta, -params::theta_limit_rad, params::theta_limit_rad);
-    phi = std::clamp(phi, -params::phi_limit_rad, params::phi_limit_rad);
-
-    out.f(i) = std::clamp(f, params::f_cmd_min, params::f_cmd_max);
-    out.theta(i) = theta;
-    out.phi(i) = phi;
+    const Vector6d D_e = wrench_direction(e_i);
+    W_now += f * D_e;
+    J.col(i) = f * wrench_direction(de_dalpha);
+    J.col(6 + i) = D_e;
   }
 
+  Vector6d W_des;
+  W_des << moment_cmd, force_cmd;
+
+  // Paper (7): augment wrench tracking into a differential wrench command.
+  const Vector6d W_dot_des = params::HEXA_KJ * (W_des - W_now);
+
+  // Paper (5): fixed weighted pseudoinverse. The nullspace term below selects posture.
+  const Matrix66d JWJ_inv = (J * params::HEXA_W_INV * J.transpose()).completeOrthogonalDecomposition().solve(Matrix66d::Identity());
+  const Matrix126d J_dagger = params::HEXA_W_INV * J.transpose() * JWJ_inv;
+
+  // Transplanted from the previous a4b2 nullspace-gradient implementation.
+  // q_dot_star is integrated only through N(q) = I - J_dagger J, preserving the primary wrench.
+  Vector12d q_dot_star = Vector12d::Zero();
+  const Eigen::Vector3d thrust_dir_ref = rpyToRot(att_cmd).transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
+  const double f_ref = force_cmd.norm() / 6.0;
+  const double rms = d.head<2>().norm();
+
+  if (rms > params::HEXA_RMS_ACTIVE) {
+    for (int i = 0; i < 6; ++i) {
+      const double yaw = arm_yaw[i];
+      const Eigen::Vector3d tangent(-std::sin(yaw), std::cos(yaw), 0.0);
+      rms_gradient(i) += 10.0 * dt * (d(0) * d(0) * tangent(0) + d(1) * d(1) * tangent(1));
+    }
+  }
+  else {
+    rms_gradient *= std::exp(-dt / params::HEXA_RMS_DECAY_TAU);
+  }
+
+  for (int i = 0; i < 6; ++i) {
+    const double yaw = arm_yaw[i];
+    const Eigen::Vector3d tangent(-std::sin(yaw), std::cos(yaw), 0.0);
+    const double alpha_ref = std::atan2(tangent.dot(thrust_dir_ref), -thrust_dir_ref(2));
+    const double alpha_target = alpha_ref + rms_gradient(i);
+
+    q_dot_star(i) = params::HEXA_NULL_K[0] * (alpha_target - q(i));
+    q_dot_star(6 + i) = params::HEXA_NULL_K[1] * (f_ref - q(6 + i));
+  }
+
+  const Matrix1212d nullspace = Matrix1212d::Identity() - J_dagger * J;
+  Vector12d q_dot = J_dagger * W_dot_des + nullspace * q_dot_star;
+
+  Vector12d q_cmd_prev = q;
+  q_cmd_prev.segment<6>(0) = previous_cmd.alpha;
+  const Vector12d q_cmd = q_cmd_prev + dt * q_dot;
+
+  HexaAllocationOutput out;
+  for (int i = 0; i < 6; ++i) {
+    out.alpha(i) = q_cmd(i);
+    out.f(i) = q_cmd(6 + i);
+  }
+
+  previous_cmd = out;
   return out;
-}
-
-inline AllocationCheck checkAllocation(const AllocationOutput& alloc, const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd)
-{
-  AllocationCheck result;
-
-  for (int i = 0; i < 4; ++i) {
-    const double x_sign = (i == 0 || i == 3) ? 1.0 : -1.0;
-    const double y_sign = (i == 0 || i == 1) ? 1.0 : -1.0;
-    const double spin = (i % 2 == 0) ? 1.0 : -1.0;
-
-    const double theta = alloc.theta(i);
-    const double phi = alloc.phi(i);
-
-    Eigen::Vector3d e_i;
-    e_i << -std::sin(theta) * std::cos(phi), std::sin(phi), -std::cos(theta) * std::cos(phi);
-
-    Eigen::Vector3d r_i;
-    r_i << x_sign * params::Lx - params::d * std::cos(phi) * std::sin(theta), y_sign * params::Ly + params::d * std::sin(phi), 0.0;
-
-    const Eigen::Vector3d force_i = alloc.f(i) * e_i;
-    const Eigen::Vector3d moment_i = r_i.cross(force_i) + spin * params::zeta * alloc.f(i) * e_i;
-
-    result.force_actual += force_i;
-    result.moment_actual += moment_i;
-  }
-
-  result.moment_error = moment_cmd - result.moment_actual;
-  result.force_error = force_cmd - result.force_actual;
-
-  const double err_m_norm = result.moment_error.norm();
-  const double err_f_norm = result.force_error.norm();
-
-  result.problem = (!result.moment_actual.allFinite()) || (!result.force_actual.allFinite()) || (err_f_norm > params::check_force_tol) || (err_m_norm > params::check_moment_tol);
-
-  if (result.problem) {
-    std::ostringstream ss;
-    ss << "\033[31m"
-       << "\n[CA CHECK]"
-       << "\n  error norm"
-       << "\n    err_m_norm = " << err_m_norm << " Nm"
-       << "\n    err_f_norm = " << err_f_norm << " N"
-       << "\n"
-       << "\n  moment [Nm]"
-       << "\n    cmd    = " << moment_cmd.transpose()
-       << "\n    actual = " << result.moment_actual.transpose()
-       << "\n    error  = " << result.moment_error.transpose()
-       << "\n"
-       << "\n  force [N]"
-       << "\n    cmd    = " << force_cmd.transpose()
-       << "\n    actual = " << result.force_actual.transpose()
-       << "\n    error  = " << result.force_error.transpose()
-       << "\n"
-       << "\n  actuator"
-       << "\n    f     = " << alloc.f.transpose()
-       << "\n    theta = " << alloc.theta.transpose()
-       << "\n    phi   = " << alloc.phi.transpose()
-       << "\033[0m";
-
-    result.message = ss.str();
-  }
-
-  return result;
 }
 
 }
