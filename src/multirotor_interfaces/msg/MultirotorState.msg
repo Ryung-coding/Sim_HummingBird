@@ -17,6 +17,3 @@ float64[3] disturbance_force  # externally measured force in controller world fr
 
 float64[2] beta     # beta_1, beta_2 [rad]
 float64[4] alpha   # alpha_1 ... alpha_4 [rad]
-float64[6] hexa_alpha  # tilt_unit_0 ... tilt_unit_5 [rad]
-
-float64[6] lidar   # front, back, left, right, up, down [m], -1: no hit

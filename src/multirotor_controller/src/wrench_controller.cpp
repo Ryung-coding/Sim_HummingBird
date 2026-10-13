@@ -14,18 +14,7 @@ class WrenchController : public rclcpp::Node
 public:
   WrenchController() : rclcpp::Node("wrench_controller")
   {
-    vehicle_ = declare_parameter<std::string>("vehicle", "hummingbird");
     d_compensation_ = declare_parameter<bool>("use_measured_disturbance", false);
-    if (vehicle_ == "hexa")
-    {
-      mass_ = params::HEXA_MASS;
-      J_ = utils::diag3(params::HEXA_J);
-    }
-    else
-    {
-      mass_ = params::HB_MASS;
-      J_ = utils::diag3(params::HB_J);
-    }
 
     sub_cmd_ = this->create_subscription<multirotor_interfaces::msg::Cmd>("/cmd", 10, std::bind(&WrenchController::onCmd, this, std::placeholders::_1));
     sub_state_ = this->create_subscription<multirotor_interfaces::msg::MultirotorState>("/multirotor_state", 10, std::bind(&WrenchController::onState, this, std::placeholders::_1));
@@ -183,7 +172,6 @@ private:
   rclcpp::Publisher<multirotor_interfaces::msg::Wrench>::SharedPtr pub_wrench_;
 
   rclcpp::Time last_time_;
-  std::string vehicle_;
   double mass_{params::HB_MASS};
   Eigen::Matrix3d J_{utils::diag3(params::HB_J)};
 

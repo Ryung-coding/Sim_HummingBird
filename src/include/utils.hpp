@@ -65,11 +65,6 @@ struct AllocationOutput {
   double nullspace_scale = 1.0;
 };
 
-struct HexaAllocationOutput {
-  Eigen::Matrix<double, 6, 1> f = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::Matrix<double, 6, 1> alpha = Eigen::Matrix<double, 6, 1>::Zero();
-};
-
 
 // Math utils ========================================================
 inline Eigen::Matrix3d hat(const Eigen::Vector3d& v)
@@ -225,8 +220,8 @@ inline Eigen::Matrix<double, 6, 1> evaluateA4B2Wrench(const Eigen::Vector4d& f, 
 inline TargetCMD posPath(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double SEG_SEC = 5.0;
-  static constexpr double XY = 0.0;
+  static constexpr double SEG_SEC = 3.0;
+  static constexpr double XY = 1.0;
   static constexpr double Z = 1.0;
 
   TargetCMD cmd;
@@ -912,123 +907,6 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
 
   out.primary_scale = primary_scale;
   out.nullspace_scale = nullspace_scale;
-
-  previous_cmd = out;
-  return out;
-}
-
-inline HexaAllocationOutput allocation_hexa_a6_ada(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Matrix<double, 6, 1>& d, const Eigen::Vector3d& att_cmd, const Eigen::Matrix<double, 6, 1>& alpha_measured, bool servo_read, double dt)
-{
-  using Vector6d = Eigen::Matrix<double, 6, 1>;
-  using Vector12d = Eigen::Matrix<double, 12, 1>;
-  using Matrix66d = Eigen::Matrix<double, 6, 6>;
-  using Matrix612d = Eigen::Matrix<double, 6, 12>;
-  using Matrix126d = Eigen::Matrix<double, 12, 6>;
-  using Matrix1212d = Eigen::Matrix<double, 12, 12>;
-
-  static bool initialized = false;
-  static HexaAllocationOutput previous_cmd;
-  static Vector6d rms_gradient = Vector6d::Zero();
-
-  if (!initialized)
-  {
-    previous_cmd.alpha = alpha_measured;
-    previous_cmd.f.setConstant(force_cmd.norm() / 6.0);
-    initialized = true;
-  }
-
-  // q = [alpha_0 ... alpha_5 f_0 ... f_5]^T, where f_i is one coaxial arm pair's total thrust.
-  Vector12d q;
-  q.segment<6>(0) = servo_read ? alpha_measured : previous_cmd.alpha;
-  q.segment<6>(6) = previous_cmd.f;
-
-  // XML arms transformed from MuJoCo z-up to the controller's z-down body frame.
-  static const std::array<double, 6> arm_yaw = {
-    0.5 * M_PI, -0.5 * M_PI, -M_PI / 6.0,
-    5.0 * M_PI / 6.0, M_PI / 6.0, -5.0 * M_PI / 6.0
-  };
-  static const std::array<double, 6> reaction_sign = {1.0, -1.0, 1.0, -1.0, -1.0, 1.0};
-
-  Vector6d W_now = Vector6d::Zero();
-  Matrix612d J = Matrix612d::Zero();
-
-  for (int i = 0; i < 6; ++i) {
-    const double alpha = q(i);
-    const double f = q(6 + i);
-    const double yaw = arm_yaw[i];
-    const double sa = std::sin(alpha);
-    const double ca = std::cos(alpha);
-
-    const Eigen::Vector3d r_i(
-      params::HEXA_L * std::cos(yaw),
-      params::HEXA_L * std::sin(yaw),
-      0.0);
-    const Eigen::Vector3d e_i(-std::sin(yaw) * sa, std::cos(yaw) * sa, -ca);
-    const Eigen::Vector3d de_dalpha(-std::sin(yaw) * ca, std::cos(yaw) * ca, sa);
-
-    const auto wrench_direction = [&](const Eigen::Vector3d& v) {
-      Vector6d D;
-      D.segment<3>(0) = r_i.cross(v) + reaction_sign[i] * params::HEXA_ZETA * v;
-      D.segment<3>(3) = v;
-      return D;
-    };
-
-    const Vector6d D_e = wrench_direction(e_i);
-    W_now += f * D_e;
-    J.col(i) = f * wrench_direction(de_dalpha);
-    J.col(6 + i) = D_e;
-  }
-
-  Vector6d W_des;
-  W_des << moment_cmd, force_cmd;
-
-  // Paper (7): augment wrench tracking into a differential wrench command.
-  const Vector6d W_dot_des = params::HEXA_KJ * (W_des - W_now);
-
-  // Paper (5): fixed weighted pseudoinverse. The nullspace term below selects posture.
-  const Matrix66d JWJ_inv = (J * params::HEXA_W_INV * J.transpose()).completeOrthogonalDecomposition().solve(Matrix66d::Identity());
-  const Matrix126d J_dagger = params::HEXA_W_INV * J.transpose() * JWJ_inv;
-
-  // Transplanted from the previous a4b2 nullspace-gradient implementation.
-  // q_dot_star is integrated only through N(q) = I - J_dagger J, preserving the primary wrench.
-  Vector12d q_dot_star = Vector12d::Zero();
-  const Eigen::Vector3d thrust_dir_ref = rpyToRot(att_cmd).transpose() * Eigen::Vector3d(0.0, 0.0, -1.0);
-  const double f_ref = force_cmd.norm() / 6.0;
-  const double rms = d.head<2>().norm();
-
-  if (rms > params::HEXA_RMS_ACTIVE) {
-    for (int i = 0; i < 6; ++i) {
-      const double yaw = arm_yaw[i];
-      const Eigen::Vector3d tangent(-std::sin(yaw), std::cos(yaw), 0.0);
-      rms_gradient(i) += 10.0 * dt * (d(0) * d(0) * tangent(0) + d(1) * d(1) * tangent(1));
-    }
-  }
-  else {
-    rms_gradient *= std::exp(-dt / params::HEXA_RMS_DECAY_TAU);
-  }
-
-  for (int i = 0; i < 6; ++i) {
-    const double yaw = arm_yaw[i];
-    const Eigen::Vector3d tangent(-std::sin(yaw), std::cos(yaw), 0.0);
-    const double alpha_ref = std::atan2(tangent.dot(thrust_dir_ref), -thrust_dir_ref(2));
-    const double alpha_target = alpha_ref + rms_gradient(i);
-
-    q_dot_star(i) = params::HEXA_NULL_K[0] * (alpha_target - q(i));
-    q_dot_star(6 + i) = params::HEXA_NULL_K[1] * (f_ref - q(6 + i));
-  }
-
-  const Matrix1212d nullspace = Matrix1212d::Identity() - J_dagger * J;
-  Vector12d q_dot = J_dagger * W_dot_des + nullspace * q_dot_star;
-
-  Vector12d q_cmd_prev = q;
-  q_cmd_prev.segment<6>(0) = previous_cmd.alpha;
-  const Vector12d q_cmd = q_cmd_prev + dt * q_dot;
-
-  HexaAllocationOutput out;
-  for (int i = 0; i < 6; ++i) {
-    out.alpha(i) = q_cmd(i);
-    out.f(i) = q_cmd(6 + i);
-  }
 
   previous_cmd = out;
   return out;

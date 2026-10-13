@@ -7,13 +7,7 @@ from launch_ros.actions import Node
 
 
 def generate_launch_description():
-    vehicle = LaunchConfiguration("vehicle")
     mode = LaunchConfiguration("mode")
-    vehicle_arg = DeclareLaunchArgument(
-        "vehicle",
-        default_value="hummingbird",
-        choices=["hummingbird", "hexa"]
-    )
     mode_arg = DeclareLaunchArgument(
         "mode",
         default_value="position_cmd",
@@ -25,7 +19,6 @@ def generate_launch_description():
         executable="plant",
         name="plant",
         output="screen",
-        parameters=[{"vehicle": vehicle, "mode": mode}]
     )
 
     wrench_controller = Node(
@@ -33,7 +26,6 @@ def generate_launch_description():
         executable="wrench_controller",
         name="wrench_controller",
         output="screen",
-        parameters=[{"vehicle": vehicle}]
     )
 
     allocator_controller = Node(
@@ -41,7 +33,6 @@ def generate_launch_description():
         executable="allocator_controller",
         name="allocator_controller",
         output="screen",
-        parameters=[{"vehicle": vehicle}]
     )
 
     position_cmd = Node(
@@ -50,14 +41,6 @@ def generate_launch_description():
         name="position_cmd",
         output="screen",
         condition=IfCondition(PythonExpression(["'", mode, "' == 'position_cmd'"]))
-    )
-
-    planning = Node(
-        package="multirotor_cmd",
-        executable="planning",
-        name="planning",
-        output="screen",
-        condition=IfCondition(PythonExpression(["'", mode, "' == 'planning'"]))
     )
 
     start_controllers_after_plant = RegisterEventHandler(
@@ -75,13 +58,11 @@ def generate_launch_description():
             target_action=wrench_controller,
             on_start=[
                 position_cmd,
-                planning,
             ]
         )
     )
 
     return LaunchDescription([
-        vehicle_arg,
         mode_arg,
         plant,
         start_controllers_after_plant,

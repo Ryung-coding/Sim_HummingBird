@@ -10,14 +10,6 @@ namespace params {
 static constexpr bool USE_SO3_HEADING_CMD = false;
 static constexpr int RATE_HZ = 400;
 
-// Task parameters-----------------------------------------------
-static constexpr std::array<double, 3> PLANNING_START = {0.00, 0.00, -1.00};
-static constexpr double PLANNING_START_TOLERANCE = 0.12;
-static constexpr double PLANNING_START_HOLD_SEC = 1.00;
-
-static constexpr std::array<double, 3> PLANNING_GOAL = {4.00, 0.00, -2.50};
-static constexpr double PLANNING_AVG_SPEED = 0.20;
-
 // Model parameters -----------------------------------------------
 static constexpr double grav = 9.81;
 
@@ -28,11 +20,6 @@ static constexpr double HB_ZETA = 0.0500;
 static constexpr double HB_Q_CMD_TAU_SERVO = 0.20;
 static constexpr double HB_ALPHA_LIMIT_RAD = M_PI / 6.0;
 static constexpr double HB_BETA_LIMIT_RAD = M_PI;
-
-static constexpr std::array<double, 3> HEXA_J = {0.091325, 0.094764, 0.176822}; //form codex
-static constexpr double HEXA_MASS = 3.350; //form codex
-static constexpr double HEXA_L = 0.300; //form codex
-static constexpr double HEXA_ZETA = HB_ZETA;
 
 // position controller -----------------------------------------------
 static constexpr std::array<double, 3> Kp_pos = {100.0, 100.0, 100.0};
@@ -71,11 +58,6 @@ static constexpr std::array<double, 10> HB_QDOT_MAX = {6.0, 6.0, 6.0, 6.0, 6.0, 
 static constexpr std::array<double, 3> HB_NULL_K = {0.5, 0.5, 0.3}; // [alpha, beta, thrust]
 static constexpr double HB_BETA_REF = 0.0 * M_PI / 180.0; // [rad]
 
-inline const Eigen::DiagonalMatrix<double, 6> HEXA_KJ = HB_KJ;
-inline const Eigen::DiagonalMatrix<double, 12> HEXA_W_INV = [] {Eigen::DiagonalMatrix<double, 12> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0, 1000.0; return W;}();
-static constexpr std::array<double, 2> HEXA_NULL_K = {0.1, 0.1}; // [alpha, thrust]
-static constexpr double HEXA_RMS_ACTIVE = 0.05;
-static constexpr double HEXA_RMS_DECAY_TAU = 10.0; //form codex
 
 }
 
