@@ -722,7 +722,7 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector2d& beta_ref, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
+inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
 {
   using Vector6d = Eigen::Matrix<double, 6, 1>;
   using Vector10d = Eigen::Matrix<double, 10, 1>;
@@ -737,7 +737,7 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
   if (!initialized)
   {
     previous_cmd.alpha = alpha_measured;
-    previous_cmd.beta = beta_ref;
+    previous_cmd.beta.setZero();
     previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX));
     initialized = true;
   }
@@ -822,7 +822,7 @@ inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const
 
   Vector10d q_dot_star = Vector10d::Zero();
   for (int i = 0; i < 4; ++i) q_dot_star(i)  = params::HB_NULL_K[0] * (0.0                    - q(i));
-  for (int i = 4; i < 6; ++i) q_dot_star(i)  = params::HB_NULL_K[1] * (beta_ref(i-4)          - q(i));
+  for (int i = 4; i < 6; ++i) q_dot_star(i)  = params::HB_NULL_K[1] * (0.0                    - q(i));
   for (int i = 6; i < 10; ++i) q_dot_star(i) = params::HB_NULL_K[2] * (force_cmd.norm() / 4.0 - q(i));
 
   // q_dot = J^# W_dot_des + (I - J^# J) q_dot_star

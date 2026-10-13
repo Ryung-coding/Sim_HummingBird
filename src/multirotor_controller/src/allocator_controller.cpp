@@ -16,8 +16,6 @@ class AllocatorController : public rclcpp::Node
 public:
   AllocatorController() : rclcpp::Node("allocator_controller")
   {
-    beta_ref_ << -params::HB_BETA_REF, params::HB_BETA_REF;
-
     wrench_subscription_ = create_subscription<multirotor_interfaces::msg::Wrench>("/wrench", 10, std::bind(&AllocatorController::onWrench, this, std::placeholders::_1));
     state_subscription_ = create_subscription<multirotor_interfaces::msg::MultirotorState>("/multirotor_state", 10, std::bind(&AllocatorController::onState, this, std::placeholders::_1));
     input_publisher_ = create_publisher<multirotor_interfaces::msg::Input>("/input", 10);
@@ -53,7 +51,7 @@ private:
     if (!(dt > 0.0) || dt > 0.2) dt = 1.0 / static_cast<double>(params::RATE_HZ);
 
     const auto alloc = utils::allocation_a1b1(moment_cmd, force_cmd);
-    // const auto alloc = utils::allocation_a4b2(moment_cmd, force_cmd, beta_ref_, alpha_measured_, beta_measured_, servo_read_, dt);
+    // const auto alloc = utils::allocation_a4b2(moment_cmd, force_cmd, alpha_measured_, beta_measured_, servo_read_, dt);
     multirotor_interfaces::msg::Input out;
 
     out.f[0] = alloc.f(0);
@@ -101,7 +99,6 @@ private:
   rclcpp::Publisher<multirotor_interfaces::msg::Input>::SharedPtr input_publisher_;
   rclcpp::Publisher<multirotor_interfaces::msg::Debug>::SharedPtr debug_publisher_;
 
-  Eigen::Vector2d beta_ref_;
   Eigen::Vector4d alpha_measured_;
   Eigen::Vector2d beta_measured_;
   rclcpp::Time last_time_;

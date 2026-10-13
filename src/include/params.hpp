@@ -56,7 +56,6 @@ inline const Eigen::DiagonalMatrix<double, 6> HB_KJ = [] {Eigen::DiagonalMatrix<
 inline const Eigen::DiagonalMatrix<double, 10> HB_W_INV = [] {Eigen::DiagonalMatrix<double, 10> W; W.diagonal() << 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1000.0, 1000.0, 1000.0, 1000.0; return W;}();
 static constexpr std::array<double, 10> HB_QDOT_MAX = {6.0, 6.0, 6.0, 6.0, 6.0, 6.0, 200.0, 200.0, 200.0, 200.0};
 static constexpr std::array<double, 3> HB_NULL_K = {0.5, 0.5, 0.3}; // [alpha, beta, thrust]
-static constexpr double HB_BETA_REF = 0.0 * M_PI / 180.0; // [rad]
 
 
 }

@@ -20,4 +20,7 @@ __pycache__/*
 
 .DS_Store
 Thumbs.db
+.codex
+.agents
+MUJOCO_LOG.TXT
 
