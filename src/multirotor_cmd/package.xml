@@ -10,6 +10,11 @@
 
   <depend>rclcpp</depend>
   <depend>multirotor_interfaces</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>plant</depend>
+  <depend>libyaml-cpp-dev</depend>
+  <depend>libompl-dev</depend>
+  <depend>coinor-libipopt-dev</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

@@ -5,8 +5,10 @@ import threading
 import numpy as np
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from multirotor_interfaces.msg import MultirotorState, Cmd, Wrench, Input
+from std_msgs.msg import Bool
+from multirotor_interfaces.msg import MultirotorState, Cmd, Input, Debug
 
 from PyQt5 import QtCore, QtWidgets
 import pyqtgraph as pg
@@ -27,8 +29,25 @@ C_G = "#3cb44b"
 C_B = "#4363d8"
 C_O = "#f58231"
 
-C3 = [C_R, C_G, C_B]
 C4 = [C_R, C_G, C_B, C_O]
+
+
+# Hummingbird rotor locations in controller body XY
+ROTOR_BODY_XY = np.array([
+    [ 0.175,  0.175],
+    [-0.175,  0.175],
+    [-0.175, -0.175],
+    [ 0.175, -0.175]
+], dtype=float)
+
+# Plot horizontal axis = body y, vertical axis = body x
+ROTOR_PLOT_YX = ROTOR_BODY_XY[:, [1, 0]]
+
+# beta1 -> rotor 1,4 / beta2 -> rotor 2,3
+BETA_INDEX = np.array([0, 1, 1, 0], dtype=int)
+
+TILT_VECTOR_SCALE = 0.35
+TILT_ARROW_HEAD = 0.035
 
 
 class Ring:
@@ -53,464 +72,880 @@ class Ring:
         return np.concatenate([self._b[self._i:], self._b[:self._i]], axis=0)
 
 
-def wrap_deg(x):
-    return (x + 180.0) % 360.0 - 180.0
-
-
 def att_cmd_to_rpy_deg(att_cmd):
     if not USE_SO3_HEADING_CMD:
-        return np.array(att_cmd[:3], dtype=float) * RAD2DEG
+        return np.asarray(att_cmd[:3], dtype=float) * RAD2DEG
 
-    h = np.array(att_cmd[:3], dtype=float)
+    h = np.asarray(att_cmd[:3], dtype=float)
     n = np.linalg.norm(h)
     if n < 1.0e-9:
         return np.zeros(3, dtype=float)
 
-    h = h / n
+    h /= n
     yaw = math.atan2(h[1], h[0])
     pitch = math.atan2(-h[2], math.sqrt(h[0] * h[0] + h[1] * h[1]))
-    roll = 0.0
-
-    return np.array([roll, pitch, yaw], dtype=float) * RAD2DEG
+    return np.array([0.0, pitch, yaw], dtype=float) * RAD2DEG
 
 
-class VNode(Node):
-    def __init__(self):
-        super().__init__("multirotor_viewer")
-        self.lock = threading.Lock()
-        self.t0 = self.get_clock().now().nanoseconds * 1e-9
+def tilt_xy_components(alpha_deg, beta_deg):
+    alpha = np.asarray(alpha_deg, dtype=float) / RAD2DEG
+    beta = np.asarray(beta_deg, dtype=float)[BETA_INDEX] / RAD2DEG
 
-        self.last_pos_cmd = np.zeros(3, dtype=float)
-        self.last_att_cmd_deg = np.zeros(3, dtype=float)
+    # e_i = [-sin(beta) cos(alpha), sin(alpha), -cos(beta) cos(alpha)]
+    return np.column_stack((
+        -np.sin(beta) * np.cos(alpha),
+        np.sin(alpha)
+    ))
 
-        self.max_pos_err_abs = np.zeros(3, dtype=float)
-        self.max_att_err_abs = np.zeros(3, dtype=float)
-        self.max_pos_err_norm = 0.0
-        self.max_att_err_norm = 0.0
-        self.max_pos_err_time = 0.0
-        self.max_att_err_time = 0.0
 
-        self.buf_pos = Ring(MAX_SAMPLES, 4)
-        self.buf_cmd = Ring(MAX_SAMPLES, 4)
-        self.buf_pos_err = Ring(MAX_SAMPLES, 4)
+def vector_polyline(origin, vector):
+    tip = origin + TILT_VECTOR_SCALE * vector
+    delta = tip - origin
+    length = np.linalg.norm(delta)
 
-        self.buf_rpy = Ring(MAX_SAMPLES, 4)
-        self.buf_att = Ring(MAX_SAMPLES, 4)
-        self.buf_att_err = Ring(MAX_SAMPLES, 4)
+    if length < 1.0e-9:
+        return np.array([origin[0], tip[0]]), np.array([origin[1], tip[1]])
 
-        self.buf_wr = Ring(MAX_SAMPLES, 7)
+    unit = delta / length
+    normal = np.array([-unit[1], unit[0]])
 
-        self.buf_theta = Ring(MAX_SAMPLES, 5)
-        self.buf_phi = Ring(MAX_SAMPLES, 5)
-        self.buf_theta_cmd = Ring(MAX_SAMPLES, 5)
-        self.buf_phi_cmd = Ring(MAX_SAMPLES, 5)
-        self.buf_thr = Ring(MAX_SAMPLES, 5)
+    head = min(TILT_ARROW_HEAD, 0.4 * length)
+    base = tip - head * unit
+    left = base + 0.55 * head * normal
+    right = base - 0.55 * head * normal
 
-        self.buf_pair_actual = Ring(MAX_SAMPLES, 5)
-        self.buf_pair_cmd = Ring(MAX_SAMPLES, 5)
+    x = np.array([origin[0], tip[0], np.nan, tip[0], left[0], np.nan, tip[0], right[0]])
+    y = np.array([origin[1], tip[1], np.nan, tip[1], left[1], np.nan, tip[1], right[1]])
 
-        self.create_subscription(MultirotorState, "/multirotor_state", self._cb_state, 10)
-        self.create_subscription(Cmd, "/cmd", self._cb_cmd, 10)
-        self.create_subscription(Wrench, "/wrench", self._cb_wrench, 10)
-        self.create_subscription(Input, "/input", self._cb_input, 10)
-
-    def _t(self):
-        return self.get_clock().now().nanoseconds * 1e-9 - self.t0
-
-    def _cb_state(self, m):
-        t = self._t()
-
-        pos = np.array([m.pos[0], m.pos[1], m.pos[2]], dtype=float)
-        rpy_deg = np.array([m.rpy[0], m.rpy[1], m.rpy[2]], dtype=float) * RAD2DEG
-        theta_deg = np.array([m.theta[0], m.theta[1], m.theta[2], m.theta[3]], dtype=float) * RAD2DEG
-        phi_deg = np.array([m.phi[0], m.phi[1], m.phi[2], m.phi[3]], dtype=float) * RAD2DEG
-
-        pos_err = self.last_pos_cmd - pos
-
-        att_err = np.array([
-            wrap_deg(self.last_att_cmd_deg[0] - rpy_deg[0]),
-            wrap_deg(self.last_att_cmd_deg[1] - rpy_deg[1]),
-            wrap_deg(self.last_att_cmd_deg[2] - rpy_deg[2])
-        ], dtype=float)
-
-        pair_actual = np.array([
-            theta_deg[0] - theta_deg[3],
-            theta_deg[1] - theta_deg[2],
-            phi_deg[0] - phi_deg[3],
-            phi_deg[1] - phi_deg[2]
-        ], dtype=float)
-
-        pos_err_abs = np.abs(pos_err)
-        att_err_abs = np.abs(att_err)
-        pos_err_norm = np.linalg.norm(pos_err)
-        att_err_norm = np.linalg.norm(att_err)
-
-        with self.lock:
-            self.max_pos_err_abs = np.maximum(self.max_pos_err_abs, pos_err_abs)
-            self.max_att_err_abs = np.maximum(self.max_att_err_abs, att_err_abs)
-
-            if pos_err_norm > self.max_pos_err_norm:
-                self.max_pos_err_norm = pos_err_norm
-                self.max_pos_err_time = t
-
-            if att_err_norm > self.max_att_err_norm:
-                self.max_att_err_norm = att_err_norm
-                self.max_att_err_time = t
-
-            self.buf_pos.push([t, pos[0], pos[1], pos[2]])
-            self.buf_rpy.push([t, rpy_deg[0], rpy_deg[1], rpy_deg[2]])
-            self.buf_theta.push([t, theta_deg[0], theta_deg[1], theta_deg[2], theta_deg[3]])
-            self.buf_phi.push([t, phi_deg[0], phi_deg[1], phi_deg[2], phi_deg[3]])
-            self.buf_pos_err.push([t, pos_err[0], pos_err[1], pos_err[2]])
-            self.buf_att_err.push([t, att_err[0], att_err[1], att_err[2]])
-            self.buf_pair_actual.push([t, pair_actual[0], pair_actual[1], pair_actual[2], pair_actual[3]])
-
-    def _cb_cmd(self, m):
-        t = self._t()
-
-        pos_cmd = np.array([m.pos_cmd[0], m.pos_cmd[1], m.pos_cmd[2]], dtype=float)
-        att_cmd_deg = att_cmd_to_rpy_deg(m.att_cmd)
-
-        self.last_pos_cmd = pos_cmd
-        self.last_att_cmd_deg = att_cmd_deg
-
-        with self.lock:
-            self.buf_cmd.push([t, pos_cmd[0], pos_cmd[1], pos_cmd[2]])
-            self.buf_att.push([t, att_cmd_deg[0], att_cmd_deg[1], att_cmd_deg[2]])
-
-    def _cb_wrench(self, m):
-        t = self._t()
-
-        with self.lock:
-            self.buf_wr.push([t, m.force[0], m.force[1], m.force[2], m.moment[0], m.moment[1], m.moment[2]])
-
-    def _cb_input(self, m):
-        t = self._t()
-
-        f = np.array([m.f[0], m.f[1], m.f[2], m.f[3]], dtype=float)
-        theta_cmd_deg = np.array([m.theta[0], m.theta[1], m.theta[2], m.theta[3]], dtype=float) * RAD2DEG
-        phi_cmd_deg = np.array([m.phi[0], m.phi[1], m.phi[2], m.phi[3]], dtype=float) * RAD2DEG
-
-        pair_cmd = np.array([
-            theta_cmd_deg[0] - theta_cmd_deg[3],
-            theta_cmd_deg[1] - theta_cmd_deg[2],
-            phi_cmd_deg[0] - phi_cmd_deg[3],
-            phi_cmd_deg[1] - phi_cmd_deg[2]
-        ], dtype=float)
-
-        with self.lock:
-            self.buf_thr.push([t, f[0], f[1], f[2], f[3]])
-            self.buf_theta_cmd.push([t, theta_cmd_deg[0], theta_cmd_deg[1], theta_cmd_deg[2], theta_cmd_deg[3]])
-            self.buf_phi_cmd.push([t, phi_cmd_deg[0], phi_cmd_deg[1], phi_cmd_deg[2], phi_cmd_deg[3]])
-            self.buf_pair_cmd.push([t, pair_cmd[0], pair_cmd[1], pair_cmd[2], pair_cmd[3]])
+    return x, y
 
 
 def _pen(color, w=2):
     return pg.mkPen(color=color, width=w, style=QtCore.Qt.SolidLine)
 
 
-def _cmd_pen(w=2):
-    return pg.mkPen(color="k", width=w, style=QtCore.Qt.DashLine)
+def _dash_pen(color="k", w=2):
+    return pg.mkPen(color=color, width=w, style=QtCore.Qt.DashLine)
 
 
-def _mkplot(glw, r, c, title, ylabel):
-    p = glw.addPlot(row=r, col=c, title=title)
+def _front(curve):
+    curve.setZValue(5)
+    return curve
+
+
+def _mkplot(glw, row, col, title, ylabel, **kwargs):
+    p = glw.addPlot(row=row, col=col, title=title, **kwargs)
     p.showGrid(x=True, y=True, alpha=0.3)
     p.setLabel("left", ylabel)
     p.getAxis("left").enableAutoSIPrefix(False)
     p.getAxis("bottom").enableAutoSIPrefix(False)
 
-    for a in ("bottom", "left"):
-        p.getAxis(a).setPen(pg.mkPen("k"))
-        p.getAxis(a).setTextPen(pg.mkPen("k"))
+    for axis in ("bottom", "left"):
+        p.getAxis(axis).setPen(pg.mkPen("k"))
+        p.getAxis(axis).setTextPen(pg.mkPen("k"))
 
     p.addLegend(offset=(-10, 5))
     return p
 
 
-def _bring_front(curve):
-    curve.setZValue(5)
-    return curve
+class VNode(Node):
+    def __init__(self):
+        super().__init__("multirotor_viewer")
+
+        self.lock = threading.Lock()
+        self.t0 = self.get_clock().now().nanoseconds * 1.0e-9
+
+        # State
+        self.buf_pos = Ring(MAX_SAMPLES, 4)
+        self.buf_vel = Ring(MAX_SAMPLES, 4)
+        self.buf_acc = Ring(MAX_SAMPLES, 4)
+        self.buf_pos_cmd = Ring(MAX_SAMPLES, 4)
+
+        self.buf_rpy = Ring(MAX_SAMPLES, 4)
+        self.buf_omega = Ring(MAX_SAMPLES, 4)
+        self.buf_att_cmd = Ring(MAX_SAMPLES, 4)
+
+        # Actuator measured / command
+        self.buf_alpha = Ring(MAX_SAMPLES, 5)
+        self.buf_beta = Ring(MAX_SAMPLES, 3)
+
+        self.buf_alpha_cmd = Ring(MAX_SAMPLES, 5)
+        self.buf_beta_cmd = Ring(MAX_SAMPLES, 3)
+        self.buf_f_cmd = Ring(MAX_SAMPLES, 5)
+
+        # Wrench: t + cmd[6] + alloc[6] + real[6]
+        self.buf_wrench = Ring(MAX_SAMPLES, 19)
+
+        # Wdot: t + desired[6] + J*qdot[6]
+        self.buf_wdot = Ring(MAX_SAMPLES, 13)
+
+        # qdot: t + [alpha4 beta2 thrust4]
+        self.buf_qdot_primary = Ring(MAX_SAMPLES, 11)
+        self.buf_qdot_null = Ring(MAX_SAMPLES, 11)
+        self.buf_qdot_final = Ring(MAX_SAMPLES, 11)
+
+        # t + primary_scale + nullspace_scale
+        self.buf_scale = Ring(MAX_SAMPLES, 3)
+
+        self.create_subscription(MultirotorState, "/multirotor_state", self._cb_state, 10)
+        self.create_subscription(Cmd, "/cmd", self._cb_cmd, 10)
+        self.create_subscription(Input, "/input", self._cb_input, 10)
+        self.create_subscription(Debug, "/allocation_debug", self._cb_debug, 10)
+
+        self.pub_force_impulse = self.create_publisher(Bool, "/test/impulse_trigger", 1)
+        self.pub_moment_impulse = self.create_publisher(Bool, "/test/moment_impulse_trigger", 1)
+
+    def _t(self):
+        return self.get_clock().now().nanoseconds * 1.0e-9 - self.t0
+
+    def trigger_force_impulse(self):
+        msg = Bool()
+        msg.data = True
+        self.pub_force_impulse.publish(msg)
+
+    def trigger_moment_impulse(self):
+        msg = Bool()
+        msg.data = True
+        self.pub_moment_impulse.publish(msg)
+
+    def _cb_state(self, m):
+        t = self._t()
+
+        pos = np.asarray(m.pos[:3], dtype=float)
+        vel = np.asarray(m.vel[:3], dtype=float)
+        acc = np.asarray(m.acc[:3], dtype=float)
+
+        rpy = np.asarray(m.rpy[:3], dtype=float) * RAD2DEG
+        omega = np.asarray(m.w_rpy[:3], dtype=float) * RAD2DEG
+
+        alpha = np.asarray(m.alpha[:4], dtype=float) * RAD2DEG
+        beta = np.asarray(m.beta[:2], dtype=float) * RAD2DEG
+
+        with self.lock:
+            self.buf_pos.push([t, *pos])
+            self.buf_vel.push([t, *vel])
+            self.buf_acc.push([t, *acc])
+
+            self.buf_rpy.push([t, *rpy])
+            self.buf_omega.push([t, *omega])
+
+            self.buf_alpha.push([t, *alpha])
+            self.buf_beta.push([t, *beta])
+
+    def _cb_cmd(self, m):
+        t = self._t()
+
+        pos_cmd = np.asarray(m.pos_cmd[:3], dtype=float)
+        att_cmd = att_cmd_to_rpy_deg(m.att_cmd)
+
+        with self.lock:
+            self.buf_pos_cmd.push([t, *pos_cmd])
+            self.buf_att_cmd.push([t, *att_cmd])
+
+    def _cb_input(self, m):
+        t = self._t()
+
+        f = np.asarray(m.f[:4], dtype=float)
+        alpha = np.asarray(m.alpha[:4], dtype=float) * RAD2DEG
+        beta = np.asarray(m.beta[:2], dtype=float) * RAD2DEG
+
+        with self.lock:
+            self.buf_f_cmd.push([t, *f])
+            self.buf_alpha_cmd.push([t, *alpha])
+            self.buf_beta_cmd.push([t, *beta])
+
+    def _cb_debug(self, m):
+        t = self._t()
+
+        with self.lock:
+            self.buf_wrench.push([t, *m.wrench_cmd, *m.wrench_alloc, *m.wrench_real])
+            self.buf_wdot.push([t, *m.w_dot_des, *m.w_dot_q])
+
+            self.buf_qdot_primary.push([t, *m.q_dot_primary])
+            self.buf_qdot_null.push([t, *m.q_dot_nullspace])
+            self.buf_qdot_final.push([t, *m.q_dot_final])
+
+            self.buf_scale.push([t, m.primary_scale, m.nullspace_scale])
 
 
 class Win(QtWidgets.QMainWindow):
     def __init__(self, node):
         super().__init__()
+
         self.node = node
+        self.paused = False
+
+        self.cv = {}
+
+        self.plots_state = []
+        self.plots_wrench = []
+        self.plots_da = []
+        self.plots_act = []
+
+        self.pause_buttons = []
+        self.pause_labels = []
 
         self.setWindowTitle("Sim_HummingBird Viewer")
-        self.resize(1800, 1050)
+        self.resize(1850, 1200)
 
-        tabs = QtWidgets.QTabWidget()
-        self.setCentralWidget(tabs)
-
-        self._cv = {}
-        self._plots_state = []
-        self._plots_act = []
+        self.tabs = QtWidgets.QTabWidget()
+        self.setCentralWidget(self.tabs)
 
         self.state_glw = pg.GraphicsLayoutWidget()
+        self.wrench_glw = pg.GraphicsLayoutWidget()
+        self.da_glw = pg.GraphicsLayoutWidget()
         self.act_glw = pg.GraphicsLayoutWidget()
 
-        tabs.addTab(self.state_glw, "State")
-        tabs.addTab(self.act_glw, "Actuator")
+        self.tabs.addTab(self._make_tab(self.state_glw), "State")
+        self.tabs.addTab(self._make_tab(self.wrench_glw), "Wrench")
+        self.tabs.addTab(self._make_tab(self.da_glw), "Differential Allocation")
+        self.tabs.addTab(self._make_tab(self.act_glw), "Actuator")
 
-        self._build_state_tab()
-        self._build_actuator_tab()
+        self._build_state()
+        self._build_wrench()
+        self._build_da()
+        self._build_actuator()
 
-        self._timer = QtCore.QTimer()
-        self._timer.timeout.connect(self._upd)
-        self._timer.start(UPDATE_MS)
+        self.timer = QtCore.QTimer()
+        self.timer.timeout.connect(self._update)
+        self.timer.start(UPDATE_MS)
 
-    def _build_state_tab(self):
-        pos_lbl = ["x", "y", "z"]
-        rpy_lbl = ["roll", "pitch", "yaw"]
-        frc_lbl = ["Fx", "Fy", "Fz"]
-        trq_lbl = ["Mx", "My", "Mz"]
+    def _make_tab(self, glw):
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        controls = QtWidgets.QHBoxLayout()
 
-        for c in range(3):
-            p = _mkplot(self.state_glw, 0, c, f"{pos_lbl[c]} / {pos_lbl[c]}_cmd", f"{pos_lbl[c]} [m]")
-            self._cv[f"pos{c}"] = p.plot(pen=_pen(C3[c]), name=pos_lbl[c])
-            self._cv[f"cmd{c}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"{pos_lbl[c]}_cmd"))
-            self._plots_state.append(p)
+        force_button = QtWidgets.QPushButton("X Force impulse")
+        moment_button = QtWidgets.QPushButton("Pitch Moment impulse")
+        pause_button = QtWidgets.QPushButton("Pause")
+        pause_button.setCheckable(True)
 
-        for c in range(3):
-            p = _mkplot(self.state_glw, 1, c, f"{pos_lbl[c]}_err = {pos_lbl[c]}_cmd - {pos_lbl[c]}", f"{pos_lbl[c]}_err [m]")
-            self._cv[f"perr{c}"] = p.plot(pen=_pen(C3[c]), name=f"{pos_lbl[c]}_err")
-            self._plots_state.append(p)
+        status = QtWidgets.QLabel("LIVE")
 
-        for c in range(3):
-            p = _mkplot(self.state_glw, 2, c, frc_lbl[c], f"{frc_lbl[c]} [N]")
-            self._cv[f"F{c}"] = p.plot(pen=_pen(C3[c]), name=frc_lbl[c])
-            self._plots_state.append(p)
+        force_button.clicked.connect(self._trigger_force_impulse)
+        moment_button.clicked.connect(self._trigger_moment_impulse)
+        pause_button.clicked.connect(self._toggle_pause)
 
-        for c in range(3):
-            p = _mkplot(self.state_glw, 3, c, f"{rpy_lbl[c]} / {rpy_lbl[c]}_cmd", f"{rpy_lbl[c]} [deg]")
-            self._cv[f"rpy{c}"] = p.plot(pen=_pen(C3[c]), name=rpy_lbl[c])
-            self._cv[f"acmd{c}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"{rpy_lbl[c]}_cmd"))
-            self._plots_state.append(p)
+        controls.addWidget(force_button)
+        controls.addWidget(moment_button)
+        controls.addSpacing(25)
+        controls.addWidget(pause_button)
+        controls.addWidget(status)
+        controls.addStretch()
 
-        for c in range(3):
-            p = _mkplot(self.state_glw, 4, c, f"{rpy_lbl[c]}_err = {rpy_lbl[c]}_cmd - {rpy_lbl[c]}", f"{rpy_lbl[c]}_err [deg]")
-            self._cv[f"aerr{c}"] = p.plot(pen=_pen(C3[c]), name=f"{rpy_lbl[c]}_err")
-            self._plots_state.append(p)
+        self.pause_buttons.append(pause_button)
+        self.pause_labels.append(status)
 
-        for c in range(3):
-            p = _mkplot(self.state_glw, 5, c, trq_lbl[c], f"{trq_lbl[c]} [N·m]")
-            self._cv[f"M{c}"] = p.plot(pen=_pen(C3[c]), name=trq_lbl[c])
-            self._plots_state.append(p)
+        layout.addLayout(controls)
+        layout.addWidget(glw, 1)
 
-        for p in self._plots_state[1:]:
-            p.setXLink(self._plots_state[0])
+        return tab
 
-        for p in self._plots_state:
+    def _trigger_force_impulse(self):
+        self.node.trigger_force_impulse()
+
+    def _trigger_moment_impulse(self):
+        self.node.trigger_moment_impulse()
+
+    def _toggle_pause(self):
+        self.paused = not self.paused
+
+        for button in self.pause_buttons:
+            button.blockSignals(True)
+            button.setChecked(self.paused)
+            button.setText("Resume" if self.paused else "Pause")
+            button.blockSignals(False)
+
+        for label in self.pause_labels:
+            label.setText("PAUSED - drag / zoom enabled" if self.paused else "LIVE")
+
+    # =========================================================
+    # State
+    # =========================================================
+
+    def _build_state(self):
+        xyz = ["x", "y", "z"]
+        rpy = ["roll", "pitch", "yaw"]
+
+        for i in range(3):
+            p = _mkplot(self.state_glw, 0, i, f"Position {xyz[i]}", f"{xyz[i]} [m]")
+            self.cv[f"pos{i}"] = p.plot(pen=_pen(C4[i], 3), name=xyz[i])
+            self.cv[f"pos_cmd{i}"] = _front(p.plot(pen=_dash_pen("k"), name=f"{xyz[i]}_cmd"))
+            self.plots_state.append(p)
+
+        for i in range(3):
+            p = _mkplot(self.state_glw, 1, i, f"Velocity / Acceleration {xyz[i]}", "[m/s, m/s²]")
+            self.cv[f"vel{i}"] = p.plot(pen=_pen(C4[i], 3), name=f"v{xyz[i]}")
+            self.cv[f"acc{i}"] = p.plot(pen=_pen(C_O), name=f"a{xyz[i]}")
+            self.plots_state.append(p)
+
+        for i in range(3):
+            p = _mkplot(self.state_glw, 2, i, f"Attitude {rpy[i]}", "[deg, deg/s]")
+            self.cv[f"rpy{i}"] = p.plot(pen=_pen(C4[i], 3), name=rpy[i])
+            self.cv[f"att_cmd{i}"] = _front(p.plot(pen=_dash_pen("k"), name=f"{rpy[i]}_cmd"))
+            self.cv[f"omega{i}"] = p.plot(pen=_pen(C_O), name=f"ω_{rpy[i]}")
+            self.plots_state.append(p)
+
+        for p in self.plots_state[1:]:
+            p.setXLink(self.plots_state[0])
+
+        for p in self.plots_state[:-3]:
             p.hideAxis("bottom")
 
-        for p in self._plots_state[-3:]:
-            p.showAxis("bottom")
+        for p in self.plots_state[-3:]:
             p.setLabel("bottom", "time [s]")
 
-    def _build_actuator_tab(self):
-        for i, cl in enumerate(C4):
-            p = _mkplot(self.act_glw, 0, i, f"f{i+1}", f"f{i+1} [N]")
-            self._cv[f"f_single{i}"] = p.plot(pen=_pen(cl), name=f"f{i+1}")
-            self._plots_act.append(p)
+    # =========================================================
+    # Wrench
+    # =========================================================
 
-        for i, cl in enumerate(C4):
-            p = _mkplot(self.act_glw, 1, i, f"φ{i+1} / φ{i+1}_cmd", f"φ{i+1} [deg]")
-            self._cv[f"phi_single{i}"] = p.plot(pen=_pen(cl), name=f"φ{i+1}")
-            self._cv[f"phic_single{i}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"φ{i+1}_cmd"))
-            self._plots_act.append(p)
+    def _build_wrench(self):
+        force_names = ["Fx", "Fy", "Fz"]
+        moment_names = ["Mx", "My", "Mz"]
 
-        for i, cl in enumerate(C4):
-            p = _mkplot(self.act_glw, 2, i, f"θ{i+1} / θ{i+1}_cmd", f"θ{i+1} [deg]")
-            self._cv[f"tht_single{i}"] = p.plot(pen=_pen(cl), name=f"θ{i+1}")
-            self._cv[f"thtc_single{i}"] = _bring_front(p.plot(pen=_cmd_pen(), name=f"θ{i+1}_cmd"))
-            self._plots_act.append(p)
+        for i in range(3):
+            p = _mkplot(self.wrench_glw, 0, i, force_names[i], f"{force_names[i]} [N]")
+            self.cv[f"F_cmd{i}"] = p.plot(pen=_dash_pen("k"), name="cmd")
+            self.cv[f"F_alloc{i}"] = p.plot(pen=_pen(C_B), name="alloc")
+            self.cv[f"F_real{i}"] = p.plot(pen=_pen(C_R), name="real")
+            self.plots_wrench.append(p)
 
-        p_f_all = _mkplot(self.act_glw, 3, 0, "f1-f4", "force [N]")
-        for i, cl in enumerate(C4):
-            self._cv[f"f_all{i}"] = p_f_all.plot(pen=_pen(cl), name=f"f{i+1}")
-        self._plots_act.append(p_f_all)
+        for i in range(3):
+            p = _mkplot(self.wrench_glw, 1, i, moment_names[i], f"{moment_names[i]} [N·m]")
+            self.cv[f"M_cmd{i}"] = p.plot(pen=_dash_pen("k"), name="cmd")
+            self.cv[f"M_alloc{i}"] = p.plot(pen=_pen(C_B), name="alloc")
+            self.cv[f"M_real{i}"] = p.plot(pen=_pen(C_R), name="real")
+            self.plots_wrench.append(p)
 
-        p_phi_all = _mkplot(self.act_glw, 3, 1, "φ1-φ4 / φ_cmd", "φ [deg]")
-        for i, cl in enumerate(C4):
-            self._cv[f"phi_all{i}"] = p_phi_all.plot(pen=_pen(cl), name=f"φ{i+1}")
-            self._cv[f"phic_all{i}"] = _bring_front(p_phi_all.plot(pen=_cmd_pen(), name=f"φ{i+1}_cmd"))
-        self._plots_act.append(p_phi_all)
+        for i in range(3):
+            p = _mkplot(self.wrench_glw, 2, i, f"{force_names[i]} error", f"Δ{force_names[i]} [N]")
+            self.cv[f"Fe_ca{i}"] = p.plot(pen=_pen(C_B), name="cmd-alloc")
+            self.cv[f"Fe_cr{i}"] = p.plot(pen=_pen(C_R), name="cmd-real")
+            self.cv[f"Fe_ar{i}"] = p.plot(pen=_pen(C_G), name="alloc-real")
+            self.plots_wrench.append(p)
 
-        p_theta_all = _mkplot(self.act_glw, 3, 2, "θ1-θ4 / θ_cmd", "θ [deg]")
-        for i, cl in enumerate(C4):
-            self._cv[f"tht_all{i}"] = p_theta_all.plot(pen=_pen(cl), name=f"θ{i+1}")
-            self._cv[f"thtc_all{i}"] = _bring_front(p_theta_all.plot(pen=_cmd_pen(), name=f"θ{i+1}_cmd"))
-        self._plots_act.append(p_theta_all)
+        for i in range(3):
+            p = _mkplot(self.wrench_glw, 3, i, f"{moment_names[i]} error", f"Δ{moment_names[i]} [N·m]")
+            self.cv[f"Me_ca{i}"] = p.plot(pen=_pen(C_B), name="cmd-alloc")
+            self.cv[f"Me_cr{i}"] = p.plot(pen=_pen(C_R), name="cmd-real")
+            self.cv[f"Me_ar{i}"] = p.plot(pen=_pen(C_G), name="alloc-real")
+            self.plots_wrench.append(p)
 
-        self.max_label = pg.LabelItem(justify="left")
-        self.max_label.setText(
-            "<div style='font-size:14pt; color:#111;'>"
-            "<b>Max error since start</b><br><br>"
-            "Position [m]<br>"
-            "x: 0.0000&nbsp;&nbsp; y: 0.0000&nbsp;&nbsp; z: 0.0000<br>"
-            "|e_pos| max: 0.0000<br><br>"
-            "Attitude [deg]<br>"
-            "roll: 0.000&nbsp;&nbsp; pitch: 0.000&nbsp;&nbsp; yaw: 0.000<br>"
-            "|e_att| max: 0.000"
-            "</div>"
-        )
-        self.act_glw.addItem(self.max_label, row=3, col=3)
+        for p in self.plots_wrench[1:]:
+            p.setXLink(self.plots_wrench[0])
 
-        for p in self._plots_act[1:]:
-            p.setXLink(self._plots_act[0])
-
-        for p in self._plots_act:
+        for p in self.plots_wrench[:-3]:
             p.hideAxis("bottom")
 
-        for p in self._plots_act[-3:]:
-            p.showAxis("bottom")
+        for p in self.plots_wrench[-3:]:
             p.setLabel("bottom", "time [s]")
 
-    def _update_max_label(self):
-        nd = self.node
+    # =========================================================
+    # Differential Allocation
+    # =========================================================
 
-        with nd.lock:
-            max_pos = nd.max_pos_err_abs.copy()
-            max_att = nd.max_att_err_abs.copy()
-            max_pos_norm = nd.max_pos_err_norm
-            max_att_norm = nd.max_att_err_norm
-            max_pos_t = nd.max_pos_err_time
-            max_att_t = nd.max_att_err_time
+    def _build_da(self):
+        moment_names = ["Mx", "My", "Mz"]
+        force_names = ["Fx", "Fy", "Fz"]
 
-        self.max_label.setText(
-            "<div style='font-size:14pt; color:#111;'>"
-            "<b>Max error since start</b><br><br>"
-            "<b>Position error [m]</b><br>"
-            f"x_max = {max_pos[0]:.4f}<br>"
-            f"y_max = {max_pos[1]:.4f}<br>"
-            f"z_max = {max_pos[2]:.4f}<br>"
-            f"|e_pos|_max = {max_pos_norm:.4f} @ t = {max_pos_t:.2f} s<br><br>"
-            "<b>Attitude error [deg]</b><br>"
-            f"roll_max = {max_att[0]:.3f}<br>"
-            f"pitch_max = {max_att[1]:.3f}<br>"
-            f"yaw_max = {max_att[2]:.3f}<br>"
-            f"|e_att|_max = {max_att_norm:.3f} @ t = {max_att_t:.2f} s"
-            "</div>"
+        # Wdot moment
+        for i in range(3):
+            p = _mkplot(self.da_glw, 0, i, f"{moment_names[i]} dot", f"{moment_names[i]} dot [N·m/s]")
+            self.cv[f"Mdot_des{i}"] = p.plot(pen=_dash_pen("k"), name="W_dot_des")
+            self.cv[f"Mdot_q{i}"] = p.plot(pen=_pen(C_R), name="J q_dot")
+            self.plots_da.append(p)
+
+        # Wdot force
+        for i in range(3):
+            p = _mkplot(self.da_glw, 1, i, f"{force_names[i]} dot", f"{force_names[i]} dot [N/s]")
+            self.cv[f"Fdot_des{i}"] = p.plot(pen=_dash_pen("k"), name="W_dot_des")
+            self.cv[f"Fdot_q{i}"] = p.plot(pen=_pen(C_R), name="J q_dot")
+            self.plots_da.append(p)
+
+        # Primary
+        p = _mkplot(self.da_glw, 2, 0, "Primary alpha rate", "alpha dot [deg/s]")
+        for i in range(4):
+            self.cv[f"qp_a{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
+        self.plots_da.append(p)
+
+        p = _mkplot(self.da_glw, 2, 1, "Primary beta rate", "beta dot [deg/s]")
+        for i in range(2):
+            self.cv[f"qp_b{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
+        self.plots_da.append(p)
+
+        p = _mkplot(self.da_glw, 2, 2, "Primary thrust rate", "f dot [N/s]")
+        for i in range(4):
+            self.cv[f"qp_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
+        self.plots_da.append(p)
+
+        # Nullspace
+        p = _mkplot(self.da_glw, 3, 0, "Nullspace alpha rate", "alpha dot [deg/s]")
+        for i in range(4):
+            self.cv[f"qn_a{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
+        self.plots_da.append(p)
+
+        p = _mkplot(self.da_glw, 3, 1, "Nullspace beta rate", "beta dot [deg/s]")
+        for i in range(2):
+            self.cv[f"qn_b{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
+        self.plots_da.append(p)
+
+        p = _mkplot(self.da_glw, 3, 2, "Nullspace thrust rate", "f dot [N/s]")
+        for i in range(4):
+            self.cv[f"qn_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
+        self.plots_da.append(p)
+
+        # Final
+        p = _mkplot(self.da_glw, 4, 0, "Final alpha rate", "alpha dot [deg/s]")
+        for i in range(4):
+            self.cv[f"qf_a{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
+        self.plots_da.append(p)
+
+        p = _mkplot(self.da_glw, 4, 1, "Final beta rate", "beta dot [deg/s]")
+        for i in range(2):
+            self.cv[f"qf_b{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
+        self.plots_da.append(p)
+
+        p = _mkplot(self.da_glw, 4, 2, "Final thrust rate", "f dot [N/s]")
+        for i in range(4):
+            self.cv[f"qf_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
+        self.plots_da.append(p)
+
+        # Rate scaling
+        p = _mkplot(self.da_glw, 5, 0, "Rate scaling", "scale / reduction [-]", colspan=3)
+        self.cv["primary_scale"] = p.plot(pen=_pen(C_R), name="primary scale")
+        self.cv["null_scale"] = p.plot(pen=_pen(C_B), name="null scale")
+        self.cv["primary_cut"] = p.plot(pen=_dash_pen(C_R), name="1-primary")
+        self.cv["null_cut"] = p.plot(pen=_dash_pen(C_B), name="1-null")
+        self.plots_da.append(p)
+
+        for p in self.plots_da[1:]:
+            p.setXLink(self.plots_da[0])
+
+        for p in self.plots_da[:-1]:
+            p.hideAxis("bottom")
+
+        self.plots_da[-1].setLabel("bottom", "time [s]")
+
+    # =========================================================
+    # Actuator
+    # =========================================================
+
+    def _build_actuator(self):
+        # Alpha measured + command
+        p = _mkplot(self.act_glw, 0, 0, "Alpha measured / command", "alpha [deg]")
+
+        for i in range(4):
+            self.cv[f"act_alpha{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
+            self.cv[f"act_alpha_cmd{i}"] = _front(
+                p.plot(pen=_dash_pen(C4[i]), name=f"α{i+1}_cmd")
+            )
+
+        self.plots_act.append(p)
+
+        # Beta measured + command
+        p = _mkplot(self.act_glw, 1, 0, "Beta measured / command", "beta [deg]")
+
+        for i in range(2):
+            self.cv[f"act_beta{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
+            self.cv[f"act_beta_cmd{i}"] = _front(
+                p.plot(pen=_dash_pen(C4[i]), name=f"β{i+1}_cmd")
+            )
+
+        self.plots_act.append(p)
+
+        # BLDC thrust
+        p = _mkplot(self.act_glw, 2, 0, "BLDC thrust command", "f [N]")
+
+        for i in range(4):
+            self.cv[f"act_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
+
+        self.plots_act.append(p)
+
+        # XY tilt direction
+        p_xy = _mkplot(
+            self.act_glw,
+            0,
+            1,
+            "Rotor tilt direction in body XY plane",
+            "body x [m]",
+            rowspan=3
         )
 
-    def _upd(self):
+        p_xy.setLabel("bottom", "body y [m]")
+        p_xy.setAspectLocked(True)
+        p_xy.setXRange(-0.58, 0.58, padding=0)
+        p_xy.setYRange(-0.58, 0.58, padding=0)
+
+        p_xy.addLine(x=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
+        p_xy.addLine(y=0.0, pen=pg.mkPen("#b0b0b0", style=QtCore.Qt.DashLine))
+
+        for i, (origin, color) in enumerate(zip(ROTOR_PLOT_YX, C4)):
+            p_xy.plot([0.0, origin[0]], [0.0, origin[1]], pen=pg.mkPen("#888888", width=2))
+            p_xy.plot([origin[0]], [origin[1]], pen=None, symbol="o",
+                      symbolSize=13, symbolBrush=color, symbolPen=pg.mkPen("k"))
+
+            rotor_label = pg.TextItem(f"R{i+1}", color=color, anchor=(0.5, 1.4))
+            rotor_label.setPos(origin[0], origin[1])
+            p_xy.addItem(rotor_label)
+
+        # +y arrow
+        p_xy.plot([0.0, 0.10], [0.0, 0.0], pen=pg.mkPen("#555555", width=3))
+        y_label = pg.TextItem("+y", color="#333333", anchor=(0.0, 0.5))
+        y_label.setPos(0.11, 0.0)
+        p_xy.addItem(y_label)
+
+        # +x arrow
+        p_xy.plot([0.0, 0.0], [0.0, 0.10], pen=pg.mkPen("#555555", width=3))
+        x_label = pg.TextItem("+x", color="#333333", anchor=(0.5, 1.0))
+        x_label.setPos(0.0, 0.11)
+        p_xy.addItem(x_label)
+
+        self.xy_actual = []
+        self.xy_cmd = []
+
+        for i, color in enumerate(C4):
+            cmd_curve = p_xy.plot(
+                pen=pg.mkPen(color=color, width=2, style=QtCore.Qt.DashLine),
+                name="command" if i == 0 else None,
+                connect="finite"
+            )
+
+            actual_curve = p_xy.plot(
+                pen=pg.mkPen(color=color, width=3),
+                name="measured" if i == 0 else None,
+                connect="finite"
+            )
+
+            cmd_curve.setZValue(3)
+            actual_curve.setZValue(4)
+
+            self.xy_cmd.append(cmd_curve)
+            self.xy_actual.append(actual_curve)
+
+        for p in self.plots_act[1:]:
+            p.setXLink(self.plots_act[0])
+
+        for p in self.plots_act[:-1]:
+            p.hideAxis("bottom")
+
+        self.plots_act[-1].setLabel("bottom", "time [s]")
+
+    def _update_xy_vectors(self, alpha_data, beta_data, curves):
+        if not alpha_data.shape[0] or not beta_data.shape[0]:
+            return
+
+        vectors = tilt_xy_components(alpha_data[-1, 1:5], beta_data[-1, 1:3])
+
+        for i, curve in enumerate(curves):
+            origin_yx = ROTOR_PLOT_YX[i]
+            vector_yx = vectors[i, [1, 0]]
+
+            x, y = vector_polyline(origin_yx, vector_yx)
+            curve.setData(x, y, connect="finite")
+
+    # =========================================================
+    # Update
+    # =========================================================
+
+    def _update(self):
+        if self.paused:
+            return
+
         nd = self.node
 
         with nd.lock:
             dp = nd.buf_pos.get()
-            dc = nd.buf_cmd.get()
-            dpe = nd.buf_pos_err.get()
+            dv = nd.buf_vel.get()
+            da = nd.buf_acc.get()
+            dpc = nd.buf_pos_cmd.get()
+
             dr = nd.buf_rpy.get()
-            da = nd.buf_att.get()
-            dae = nd.buf_att_err.get()
-            dw = nd.buf_wr.get()
-            dth = nd.buf_theta.get()
-            dph = nd.buf_phi.get()
-            dthc = nd.buf_theta_cmd.get()
-            dphc = nd.buf_phi_cmd.get()
-            df = nd.buf_thr.get()
+            domega = nd.buf_omega.get()
+            dac = nd.buf_att_cmd.get()
+
+            dalpha = nd.buf_alpha.get()
+            dbeta = nd.buf_beta.get()
+
+            dalpha_c = nd.buf_alpha_cmd.get()
+            dbeta_c = nd.buf_beta_cmd.get()
+            df = nd.buf_f_cmd.get()
+
+            dwr = nd.buf_wrench.get()
+            dwd = nd.buf_wdot.get()
+
+            dqp = nd.buf_qdot_primary.get()
+            dqn = nd.buf_qdot_null.get()
+            dqf = nd.buf_qdot_final.get()
+
+            ds = nd.buf_scale.get()
+
+        data_all = [
+            dp, dv, da, dpc,
+            dr, domega, dac,
+            dalpha, dbeta, dalpha_c, dbeta_c, df,
+            dwr, dwd, dqp, dqn, dqf, ds
+        ]
 
         tn = 0.0
-        for d in (dp, dc, dpe, dr, da, dae, dw, dth, dph, dthc, dphc, df):
-            if d.shape[0]:
-                tn = max(tn, d[-1, 0])
+
+        for data in data_all:
+            if data.shape[0]:
+                tn = max(tn, data[-1, 0])
 
         if tn == 0.0:
             return
 
         tl = tn - WINDOW_SEC
 
-        def tr(a):
-            return a[a[:, 0] >= tl] if a.shape[0] else a
+        def tr(data):
+            if not data.shape[0]:
+                return data
+            return data[data[:, 0] >= tl]
 
         dp = tr(dp)
-        dc = tr(dc)
-        dpe = tr(dpe)
-        dr = tr(dr)
+        dv = tr(dv)
         da = tr(da)
-        dae = tr(dae)
-        dw = tr(dw)
-        dth = tr(dth)
-        dph = tr(dph)
-        dthc = tr(dthc)
-        dphc = tr(dphc)
+        dpc = tr(dpc)
+
+        dr = tr(dr)
+        domega = tr(domega)
+        dac = tr(dac)
+
+        dalpha = tr(dalpha)
+        dbeta = tr(dbeta)
+        dalpha_c = tr(dalpha_c)
+        dbeta_c = tr(dbeta_c)
         df = tr(df)
 
-        cv = self._cv
+        dwr = tr(dwr)
+        dwd = tr(dwd)
+
+        dqp = tr(dqp)
+        dqn = tr(dqn)
+        dqf = tr(dqf)
+
+        ds = tr(ds)
+
+        cv = self.cv
+
+        # -----------------------------------------------------
+        # State
+        # -----------------------------------------------------
 
         if dp.shape[0]:
             for i in range(3):
-                cv[f"pos{i}"].setData(dp[:, 0], dp[:, 1 + i])
-        if dc.shape[0]:
-            for i in range(3):
-                cv[f"cmd{i}"].setData(dc[:, 0], dc[:, 1 + i])
-        if dpe.shape[0]:
-            for i in range(3):
-                cv[f"perr{i}"].setData(dpe[:, 0], dpe[:, 1 + i])
+                cv[f"pos{i}"].setData(dp[:, 0], dp[:, 1+i])
 
-        if dw.shape[0]:
+        if dpc.shape[0]:
             for i in range(3):
-                cv[f"F{i}"].setData(dw[:, 0], dw[:, 1 + i])
-                cv[f"M{i}"].setData(dw[:, 0], dw[:, 4 + i])
+                cv[f"pos_cmd{i}"].setData(dpc[:, 0], dpc[:, 1+i])
+
+        if dv.shape[0]:
+            for i in range(3):
+                cv[f"vel{i}"].setData(dv[:, 0], dv[:, 1+i])
+
+        if da.shape[0]:
+            for i in range(3):
+                cv[f"acc{i}"].setData(da[:, 0], da[:, 1+i])
 
         if dr.shape[0]:
             for i in range(3):
-                cv[f"rpy{i}"].setData(dr[:, 0], dr[:, 1 + i])
-        if da.shape[0]:
+                cv[f"rpy{i}"].setData(dr[:, 0], dr[:, 1+i])
+
+        if dac.shape[0]:
             for i in range(3):
-                cv[f"acmd{i}"].setData(da[:, 0], da[:, 1 + i])
-        if dae.shape[0]:
+                cv[f"att_cmd{i}"].setData(dac[:, 0], dac[:, 1+i])
+
+        if domega.shape[0]:
             for i in range(3):
-                cv[f"aerr{i}"].setData(dae[:, 0], dae[:, 1 + i])
+                cv[f"omega{i}"].setData(domega[:, 0], domega[:, 1+i])
+
+        # -----------------------------------------------------
+        # Wrench
+        # order = [Mx My Mz Fx Fy Fz]
+        # -----------------------------------------------------
+
+        if dwr.shape[0]:
+            t = dwr[:, 0]
+
+            Wcmd = dwr[:, 1:7]
+            Walloc = dwr[:, 7:13]
+            Wreal = dwr[:, 13:19]
+
+            for i in range(3):
+                mi = i
+                fi = 3 + i
+
+                cv[f"M_cmd{i}"].setData(t, Wcmd[:, mi])
+                cv[f"M_alloc{i}"].setData(t, Walloc[:, mi])
+                cv[f"M_real{i}"].setData(t, Wreal[:, mi])
+
+                cv[f"F_cmd{i}"].setData(t, Wcmd[:, fi])
+                cv[f"F_alloc{i}"].setData(t, Walloc[:, fi])
+                cv[f"F_real{i}"].setData(t, Wreal[:, fi])
+
+                cv[f"Me_ca{i}"].setData(t, Wcmd[:, mi] - Walloc[:, mi])
+                cv[f"Me_cr{i}"].setData(t, Wcmd[:, mi] - Wreal[:, mi])
+                cv[f"Me_ar{i}"].setData(t, Walloc[:, mi] - Wreal[:, mi])
+
+                cv[f"Fe_ca{i}"].setData(t, Wcmd[:, fi] - Walloc[:, fi])
+                cv[f"Fe_cr{i}"].setData(t, Wcmd[:, fi] - Wreal[:, fi])
+                cv[f"Fe_ar{i}"].setData(t, Walloc[:, fi] - Wreal[:, fi])
+
+        # -----------------------------------------------------
+        # Wdot
+        # -----------------------------------------------------
+
+        if dwd.shape[0]:
+            t = dwd[:, 0]
+
+            Wdot_des = dwd[:, 1:7]
+            Wdot_q = dwd[:, 7:13]
+
+            for i in range(3):
+                cv[f"Mdot_des{i}"].setData(t, Wdot_des[:, i])
+                cv[f"Mdot_q{i}"].setData(t, Wdot_q[:, i])
+
+                cv[f"Fdot_des{i}"].setData(t, Wdot_des[:, 3+i])
+                cv[f"Fdot_q{i}"].setData(t, Wdot_q[:, 3+i])
+
+        # -----------------------------------------------------
+        # qdot primary
+        # -----------------------------------------------------
+
+        if dqp.shape[0]:
+            t = dqp[:, 0]
+
+            alpha = dqp[:, 1:5] * RAD2DEG
+            beta = dqp[:, 5:7] * RAD2DEG
+            thrust = dqp[:, 7:11]
+
+            for i in range(4):
+                cv[f"qp_a{i}"].setData(t, alpha[:, i])
+                cv[f"qp_f{i}"].setData(t, thrust[:, i])
+
+            for i in range(2):
+                cv[f"qp_b{i}"].setData(t, beta[:, i])
+
+        # -----------------------------------------------------
+        # qdot nullspace
+        # -----------------------------------------------------
+
+        if dqn.shape[0]:
+            t = dqn[:, 0]
+
+            alpha = dqn[:, 1:5] * RAD2DEG
+            beta = dqn[:, 5:7] * RAD2DEG
+            thrust = dqn[:, 7:11]
+
+            for i in range(4):
+                cv[f"qn_a{i}"].setData(t, alpha[:, i])
+                cv[f"qn_f{i}"].setData(t, thrust[:, i])
+
+            for i in range(2):
+                cv[f"qn_b{i}"].setData(t, beta[:, i])
+
+        # -----------------------------------------------------
+        # qdot final
+        # -----------------------------------------------------
+
+        if dqf.shape[0]:
+            t = dqf[:, 0]
+
+            alpha = dqf[:, 1:5] * RAD2DEG
+            beta = dqf[:, 5:7] * RAD2DEG
+            thrust = dqf[:, 7:11]
+
+            for i in range(4):
+                cv[f"qf_a{i}"].setData(t, alpha[:, i])
+                cv[f"qf_f{i}"].setData(t, thrust[:, i])
+
+            for i in range(2):
+                cv[f"qf_b{i}"].setData(t, beta[:, i])
+
+        # -----------------------------------------------------
+        # Scale
+        # -----------------------------------------------------
+
+        if ds.shape[0]:
+            t = ds[:, 0]
+
+            primary = ds[:, 1]
+            nullspace = ds[:, 2]
+
+            cv["primary_scale"].setData(t, primary)
+            cv["null_scale"].setData(t, nullspace)
+
+            cv["primary_cut"].setData(t, 1.0 - primary)
+            cv["null_cut"].setData(t, 1.0 - nullspace)
+
+        # -----------------------------------------------------
+        # Actuator
+        # -----------------------------------------------------
+
+        if dalpha.shape[0]:
+            for i in range(4):
+                cv[f"act_alpha{i}"].setData(dalpha[:, 0], dalpha[:, 1+i])
+
+        if dalpha_c.shape[0]:
+            for i in range(4):
+                cv[f"act_alpha_cmd{i}"].setData(dalpha_c[:, 0], dalpha_c[:, 1+i])
+
+        if dbeta.shape[0]:
+            for i in range(2):
+                cv[f"act_beta{i}"].setData(dbeta[:, 0], dbeta[:, 1+i])
+
+        if dbeta_c.shape[0]:
+            for i in range(2):
+                cv[f"act_beta_cmd{i}"].setData(dbeta_c[:, 0], dbeta_c[:, 1+i])
 
         if df.shape[0]:
             for i in range(4):
-                cv[f"f_single{i}"].setData(df[:, 0], df[:, 1 + i])
-                cv[f"f_all{i}"].setData(df[:, 0], df[:, 1 + i])
+                cv[f"act_f{i}"].setData(df[:, 0], df[:, 1+i])
 
-        if dph.shape[0]:
-            for i in range(4):
-                cv[f"phi_single{i}"].setData(dph[:, 0], dph[:, 1 + i])
-                cv[f"phi_all{i}"].setData(dph[:, 0], dph[:, 1 + i])
+        self._update_xy_vectors(dalpha, dbeta, self.xy_actual)
+        self._update_xy_vectors(dalpha_c, dbeta_c, self.xy_cmd)
 
-        if dphc.shape[0]:
-            for i in range(4):
-                cv[f"phic_single{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
-                cv[f"phic_all{i}"].setData(dphc[:, 0], dphc[:, 1 + i])
+        # -----------------------------------------------------
+        # Auto-follow
+        # -----------------------------------------------------
 
-        if dth.shape[0]:
-            for i in range(4):
-                cv[f"tht_single{i}"].setData(dth[:, 0], dth[:, 1 + i])
-                cv[f"tht_all{i}"].setData(dth[:, 0], dth[:, 1 + i])
+        if self.plots_state:
+            self.plots_state[0].setXRange(tl, tn, padding=0)
 
-        if dthc.shape[0]:
-            for i in range(4):
-                cv[f"thtc_single{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
-                cv[f"thtc_all{i}"].setData(dthc[:, 0], dthc[:, 1 + i])
+        if self.plots_wrench:
+            self.plots_wrench[0].setXRange(tl, tn, padding=0)
 
-        self._update_max_label()
+        if self.plots_da:
+            self.plots_da[0].setXRange(tl, tn, padding=0)
 
-        if self._plots_state:
-            self._plots_state[0].setXRange(tl, tn, padding=0)
+        if self.plots_act:
+            self.plots_act[0].setXRange(tl, tn, padding=0)
 
-        if self._plots_act:
-            self._plots_act[0].setXRange(tl, tn, padding=0)
+
+def _spin(node):
+    try:
+        rclpy.spin(node)
+    except ExternalShutdownException:
+        pass
 
 
 def main():
     rclpy.init()
+
     node = VNode()
-    threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
+    threading.Thread(target=_spin, args=(node,), daemon=True).start()
 
     app = QtWidgets.QApplication(sys.argv)
+
     win = Win(node)
     win.show()
+
     code = app.exec_()
 
     node.destroy_node()
     rclpy.shutdown()
+
     sys.exit(code)
 
 
