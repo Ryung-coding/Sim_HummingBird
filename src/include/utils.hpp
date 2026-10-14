@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <limits>
+#include <utility>
 #include <params.hpp>
 
 namespace utils {
@@ -42,6 +44,12 @@ struct TargetCMD {
   double roll = 0.0;
   double pitch = 0.0;
   double yaw = 0.0;
+  Eigen::Vector3d vel = Eigen::Vector3d::Zero();
+  Eigen::Vector3d acc = Eigen::Vector3d::Zero();
+  Eigen::Vector4d quat{1.0, 0.0, 0.0, 0.0};
+  Eigen::Vector3d omega = Eigen::Vector3d::Zero();
+  Eigen::Vector3d omega_dot = Eigen::Vector3d::Zero();
+  bool use_quaternion = false;
 };
 
 struct AllocationOutput {
@@ -165,6 +173,60 @@ inline Eigen::Vector3d rotToRpy(const Eigen::Matrix3d& R)
   return rpy;
 }
 
+inline Eigen::Vector4d sigmaToQuat(const Eigen::Vector3d& sigma)
+{
+  // Liu et al. (2024), Eq. (26): stereographic map with the north pole excluded.
+  const double d = 1.0 + sigma.squaredNorm();
+  Eigen::Vector4d q;
+  q << (sigma.squaredNorm() - 1.0) / d, 2.0 * sigma / d;
+  return q;
+}
+
+inline Eigen::Vector3d rpyToSigma(const Eigen::Vector3d& rpy)
+{
+  Eigen::Quaterniond q(utils::rpyToRot(rpy));
+  if (q.w() > 0.0) q.coeffs() *= -1.0;
+  return q.vec() / std::max(1.0 - q.w(), 1.0e-8);
+}
+
+inline Eigen::Vector3d sigmaToBodyOmega(const Eigen::Vector3d& sigma, const Eigen::Vector3d& sigma_dot)
+{
+  const double d = 1.0 + sigma.squaredNorm();
+  const double sd = sigma.dot(sigma_dot);
+  const Eigen::Vector4d q = sigmaToQuat(sigma);
+  Eigen::Vector4d q_dot;
+  q_dot << 4.0 * sd / (d * d), 2.0 * sigma_dot / d - 4.0 * sd * sigma / (d * d);
+  const Eigen::Quaterniond Q(q(0), q(1), q(2), q(3));
+  const Eigen::Quaterniond Qdot(q_dot(0), q_dot(1), q_dot(2), q_dot(3));
+  return 2.0 * (Q.conjugate() * Qdot).vec();
+}
+
+inline Eigen::Vector3d sigmaToBodyOmegaDot(const Eigen::Vector3d& sigma, const Eigen::Vector3d& sigma_dot, const Eigen::Vector3d& sigma_ddot)
+{
+  const double d = 1.0 + sigma.squaredNorm();
+  const double sd = sigma.dot(sigma_dot);
+  const double sdd = sigma_dot.squaredNorm() + sigma.dot(sigma_ddot);
+  const Eigen::Vector4d q = sigmaToQuat(sigma);
+  Eigen::Vector4d q_ddot;
+  q_ddot(0) = 4.0 * sdd / (d * d) - 16.0 * sd * sd / (d * d * d);
+  q_ddot.tail<3>() = 2.0 * sigma_ddot / d - 8.0 * sd * sigma_dot / (d * d)
+    - 4.0 * sdd * sigma / (d * d) + 16.0 * sd * sd * sigma / (d * d * d);
+  const Eigen::Quaterniond Q(q(0), q(1), q(2), q(3));
+  const Eigen::Quaterniond Qddot(q_ddot(0), q_ddot(1), q_ddot(2), q_ddot(3));
+  return 2.0 * (Q.conjugate() * Qddot).vec();
+}
+
+inline std::array<Eigen::Vector3d, 8> boxVertices(const Eigen::Vector3d& half_size)
+{
+  std::array<Eigen::Vector3d, 8> v;
+  for (int i = 0; i < 8; ++i) {
+    v[i] << (i & 1 ? 1.0 : -1.0) * half_size(0),
+            (i & 2 ? 1.0 : -1.0) * half_size(1),
+            (i & 4 ? 1.0 : -1.0) * half_size(2);
+  }
+  return v;
+}
+
 inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
 {
   Eigen::Vector3d b1 = heading;
@@ -187,6 +249,76 @@ inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
   R.col(2) = b3;
 
   return R;
+}
+
+inline bool orientedBoxesOverlap(const Eigen::Vector3d& p, const Eigen::Matrix3d& R, const Eigen::Vector3d& half_size, const Eigen::Vector3d& box_center, const Eigen::Matrix3d& box_R, const Eigen::Vector3d& box_half_size)
+{
+  for (const auto& v : boxVertices(half_size))
+  {
+    const Eigen::Vector3d local = box_R.transpose() * (p + R * v - box_center);
+    if ((local.array().abs() < box_half_size.array()).all()) return true;
+  }
+  // OBB versus OBB separating axes: 3 body, 3 obstacle, and 9 cross products.
+  const Eigen::Matrix3d C = R.transpose() * box_R;
+  const Eigen::Matrix3d absC = C.cwiseAbs().array() + 1.0e-9;
+  const Eigen::Vector3d t = R.transpose() * (p - box_center);
+  bool separated = false;
+  for (int i = 0; i < 3; ++i)
+  {
+    if (std::abs(t(i)) > half_size(i) + absC.row(i).dot(box_half_size)) separated = true;
+  }
+  for (int j = 0; j < 3; ++j)
+  {
+    const double box_axis = std::abs(box_R.col(j).dot(p - box_center));
+    if (box_axis > box_half_size(j) + absC.col(j).dot(half_size)) separated = true;
+  }
+  for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
+  {
+    const int i1 = (i + 1) % 3, i2 = (i + 2) % 3;
+    const int j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+    const double body_radius = half_size(i1) * absC(i2, j) + half_size(i2) * absC(i1, j);
+    const double box_radius = box_half_size(j1) * absC(i, j2) + box_half_size(j2) * absC(i, j1);
+    if (std::abs(t(i2) * C(i1, j) - t(i1) * C(i2, j)) > body_radius + box_radius) separated = true;
+  }
+  return !separated;
+}
+
+inline std::pair<double, Eigen::Vector3d> nearestBoxPointInEllipsoid( const Eigen::Vector3d& box_center, const Eigen::Vector3d& box_half_size, const Eigen::Matrix3d& box_R, const Eigen::Vector3d& center, const Eigen::Matrix3d& Q)
+{
+  const Eigen::Vector3d lower = -box_half_size;
+  const Eigen::Vector3d upper = box_half_size;
+  const Eigen::Vector3d local_center = box_R.transpose() * (center - box_center);
+  const Eigen::Matrix3d local_Q = box_R.transpose() * Q * box_R;
+  double best = std::numeric_limits<double>::infinity();
+  Eigen::Vector3d best_x = Eigen::Vector3d::Zero();
+  for (int code = 0; code < 27; ++code) {
+    Eigen::Vector3d x = local_center;
+    std::array<int, 3> free{};
+    int state = code, nfree = 0;
+    for (int axis = 0; axis < 3; ++axis) {
+      const int side = state % 3;
+      state /= 3;
+      if (side == 0) x(axis) = lower(axis);
+      else if (side == 1) x(axis) = upper(axis);
+      else free[nfree++] = axis;
+    }
+    if (nfree > 0) {
+      Eigen::MatrixXd H(nfree, nfree);
+      Eigen::VectorXd rhs(nfree);
+      for (int row = 0; row < nfree; ++row) {
+        rhs(row) = 0.0;
+        for (int axis = 0; axis < 3; ++axis) rhs(row) -= local_Q(free[row], axis) * (x(axis) - local_center(axis));
+        for (int col = 0; col < nfree; ++col) H(row, col) = local_Q(free[row], free[col]);
+      }
+      const Eigen::VectorXd dx = H.ldlt().solve(rhs);
+      for (int row = 0; row < nfree; ++row) x(free[row]) += dx(row);
+    }
+    if ((x.array() < lower.array() - 1.0e-9).any()
+        || (x.array() > upper.array() + 1.0e-9).any()) continue;
+    const double distance = (x - local_center).dot(local_Q * (x - local_center));
+    if (distance < best) { best = distance; best_x = box_center + box_R * x; }
+  }
+  return std::pair<double, Eigen::Vector3d>(best, best_x);
 }
 
 inline Eigen::Matrix<double, 6, 1> evaluateA4B2Wrench(const Eigen::Vector4d& f, const Eigen::Vector2d& beta, const Eigen::Vector4d& alpha)

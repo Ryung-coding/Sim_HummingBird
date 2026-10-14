@@ -23,6 +23,11 @@ public:
     last_time_ = this->now();
 
     pos_cmd_.setZero();
+    vel_cmd_.setZero();
+    acc_cmd_.setZero();
+    quat_cmd_ << 1.0, 0.0, 0.0, 0.0;
+    Wd_.setZero();
+    Wd_dot_.setZero();
     att_cmd_.setZero();
     pos_.setZero();
     vel_.setZero();
@@ -39,6 +44,12 @@ private:
   {
     pos_cmd_ << static_cast<double>(msg->pos_cmd[0]), static_cast<double>(msg->pos_cmd[1]), static_cast<double>(msg->pos_cmd[2]);
     att_cmd_ << static_cast<double>(msg->att_cmd[0]), static_cast<double>(msg->att_cmd[1]), static_cast<double>(msg->att_cmd[2]);
+    vel_cmd_ << msg->vel_cmd[0], msg->vel_cmd[1], msg->vel_cmd[2];
+    acc_cmd_ << msg->acc_cmd[0], msg->acc_cmd[1], msg->acc_cmd[2];
+    quat_cmd_ << msg->quat_cmd[0], msg->quat_cmd[1], msg->quat_cmd[2], msg->quat_cmd[3];
+    Wd_ << msg->angular_velocity_cmd[0], msg->angular_velocity_cmd[1], msg->angular_velocity_cmd[2];
+    Wd_dot_ << msg->angular_acceleration_cmd[0], msg->angular_acceleration_cmd[1], msg->angular_acceleration_cmd[2];
+    use_quaternion_ = msg->use_quaternion;
 
     have_cmd_ = true;
     tryPublish();
@@ -68,7 +79,7 @@ private:
     pos_i_ += e * dt;
     pos_i_ = utils::clampVec3(pos_i_, i_sat);
 
-    Eigen::Vector3d F_world = Kp.cwiseProduct(e) + Ki.cwiseProduct(pos_i_) - Kd.cwiseProduct(vel_);
+    Eigen::Vector3d F_world = Kp.cwiseProduct(e) + Ki.cwiseProduct(pos_i_) + Kd.cwiseProduct(vel_cmd_ - vel_) + mass_ * acc_cmd_;
     F_world(2) -= mass_ * params::grav;
 
     // Apply disturbance compensation if enabled (aplly DOB not yet implemented)
@@ -79,9 +90,6 @@ private:
 
   Eigen::Vector3d attitudeController(const Eigen::Matrix3d& R, const Eigen::Matrix3d& Rd, double dt)
   {
-    const Eigen::Vector3d Wd = Eigen::Vector3d::Zero();
-    const Eigen::Vector3d Wd_dot = Eigen::Vector3d::Zero();
-
     const Eigen::Matrix3d RtRd = R.transpose() * Rd;
 
     Eigen::Vector3d eR = 0.5 * utils::vee(RtRd.transpose() - RtRd);
@@ -89,7 +97,7 @@ private:
     const double eR_norm = eR.norm();
     if (eR_norm > params::ER_NORM_MAX) eR = eR * (params::ER_NORM_MAX / eR_norm);
 
-    const Eigen::Vector3d eW = W_ - R.transpose() * Rd * Wd;
+    const Eigen::Vector3d eW = W_ - R.transpose() * Rd * Wd_;
 
     att_i_ += (eW + eR) * dt;
     att_i_ = utils::clampVec3(att_i_, utils::vec3(params::att_i_sat));
@@ -98,7 +106,8 @@ private:
     const Eigen::Matrix3d kW = utils::diag3(params::kW);
     const Eigen::Matrix3d kI = utils::diag3(params::kI);
 
-    Eigen::Vector3d M = -kR * eR - kW * eW - kI * att_i_ - J_ * utils::hat(W_) * RtRd * Wd + J_ * RtRd * Wd_dot;
+    Eigen::Vector3d M = -kR * eR - kW * eW - kI * att_i_ + W_.cross(J_ * W_)
+      - J_ * utils::hat(W_) * RtRd * Wd_ + J_ * RtRd * Wd_dot_;
     M = utils::clampVec3(M, utils::vec3(params::torque_sat));
 
     return M;
@@ -137,7 +146,8 @@ private:
     if (!(dt > 0.0) || dt > 0.2) dt = 1.0 / static_cast<double>(params::RATE_HZ);
 
     const Eigen::Matrix3d R = utils::quatToRot(quat_);
-    const Eigen::Matrix3d Rd = params::USE_SO3_HEADING_CMD ? utils::headingToRot(att_cmd_) : utils::rpyToRot(att_cmd_);
+    const Eigen::Matrix3d Rd = use_quaternion_ ? utils::quatToRot(quat_cmd_) :
+      (params::USE_SO3_HEADING_CMD ? utils::headingToRot(att_cmd_) : utils::rpyToRot(att_cmd_));
 
     const Eigen::Vector3d F_world = positionController(dt);
     Eigen::Vector3d F_body = R.transpose() * F_world;
@@ -176,6 +186,11 @@ private:
   Eigen::Matrix3d J_{utils::diag3(params::HB_J)};
 
   Eigen::Vector3d pos_cmd_;
+  Eigen::Vector3d vel_cmd_;
+  Eigen::Vector3d acc_cmd_;
+  Eigen::Vector4d quat_cmd_;
+  Eigen::Vector3d Wd_;
+  Eigen::Vector3d Wd_dot_;
   Eigen::Vector3d att_cmd_;
   Eigen::Vector3d pos_;
   Eigen::Vector3d vel_;
@@ -187,6 +202,7 @@ private:
   Eigen::Vector3d att_i_;
   Eigen::Matrix<double, 6, 1> disturbance_rms_sq_;
 
+  bool use_quaternion_{false};
   bool have_cmd_{false};
   bool have_state_{false};
   bool disturbance_observer_initialized_{false};

@@ -1,0 +1,39 @@
+frame: controller_z_down
+
+bounds:
+  min: [-2.5, -1.0, -2.5]
+  max: [2.5, 9.5, -0.20]
+
+# x/y/z in meters, roll/pitch/yaw in radians (controller z-down frame)
+start: {x: 0.0, y: 0.0, z: -1.0, roll: 0.0, pitch: 0.0, yaw: 1.570796}
+goal: {x: 0.8, y: 8.5, z: -1.25, roll: 0.0, pitch: -0.785398, yaw: 0.0}
+
+vehicle:
+  half_size: [0.32, 0.32, 0.16]
+
+obstacles:
+  - name: slit1_upper
+    center: [1.3011, 2.0, 0.3011]
+    size: [6.0, 1.0, 3.0]
+    rpy: [0.0, 0.785398, 0.0]
+    rgba: [0.75, 0.18, 0.12, 1.0]
+  - name: slit1_lower
+    center: [-1.3011, 2.0, -2.3011]
+    size: [6.0, 1.0, 3.0]
+    rpy: [0.0, 0.785398, 0.0]
+    rgba: [0.75, 0.18, 0.12, 1.0]
+  - name: center_column
+    type: cylinder
+    center: [0.0, 4.25, -1.35]
+    size: [0.6, 0.6, 2.3]
+    rgba: [0.82, 0.52, 0.18, 1.0]
+  - name: slit2_upper
+    center: [-0.5011, 6.5, 0.0511]
+    size: [6.0, 1.0, 3.0]
+    rpy: [0.0, -0.785398, 0.0]
+    rgba: [0.12, 0.45, 0.75, 1.0]
+  - name: slit2_lower
+    center: [2.1011, 6.5, -2.5511]
+    size: [6.0, 1.0, 3.0]
+    rpy: [0.0, -0.785398, 0.0]
+    rgba: [0.12, 0.45, 0.75, 1.0]

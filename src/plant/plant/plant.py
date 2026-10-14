@@ -7,6 +7,7 @@ import signal
 import math
 import threading
 import numpy as np
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -16,7 +17,7 @@ import mujoco
 import mujoco.viewer
 from std_msgs.msg import Bool
 
-from multirotor_interfaces.msg import Input, MultirotorState
+from multirotor_interfaces.msg import Cmd, Input, MultirotorState
 
 # control rate and physics rate
 PHYSICS_HZ = 400.0
@@ -54,6 +55,11 @@ THRUST_ARROW_MIN_LEN = 0.15
 THRUST_ARROW_MAX_LEN = 1.20
 THRUST_ARROW_WIDTH = 0.008
 THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
+POSE_AXIS_RGBA = np.array([[1.0, 0.15, 0.15, 1.0], [0.15, 1.0, 0.15, 1.0],
+                           [0.15, 0.35, 1.0, 1.0]], dtype=np.float32)
+POSE_AXIS_LENGTH = 0.42
+POSE_TRACE_LENGTH = 0.25
+POSE_AXIS_WIDTH = 0.012
 PROP_SPIN_MAX_RAD_PER_SEC = 80.0
 
 RANDOM_DISTURBANCE_DIRECTION_ZDOWN = np.array([1.0, 0.0, 0.0], dtype=float)
@@ -109,6 +115,15 @@ def rotmat_to_rpy(R):
     yaw = math.atan2(R[1, 0], R[0, 0])
 
     return np.array([roll, pitch, yaw], dtype=float)
+
+def rpy_to_rotmat(rpy):
+    roll, pitch, yaw = rpy
+    cr, sr = math.cos(roll), math.sin(roll)
+    cp, sp = math.cos(pitch), math.sin(pitch)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                     [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+                     [-sp, cp * sr, cp * cr]], dtype=float)
 
 def rotmat_to_quat(R):
     tr = R[0, 0] + R[1, 1] + R[2, 2]
@@ -167,8 +182,43 @@ class PlantRosNode(Node):
         self.n_ctrl = HB_N_CTRL
         self.body_name = "body"
 
-        self.model = mujoco.MjModel.from_xml_path(xml_path)
+        environment_path = self.declare_parameter(
+            "environment_file", os.path.join(pkg_share, "environment.yaml")).value
+        with open(environment_path, encoding="utf-8") as environment_file:
+            environment = yaml.safe_load(environment_file)
+        if environment["frame"] != "controller_z_down":
+            raise ValueError("environment frame must be controller_z_down")
+        spec = mujoco.MjSpec.from_file(xml_path)
+        flip = np.diag([1.0, -1.0, -1.0])
+        start_rpy = [environment["start"][axis] for axis in ("roll", "pitch", "yaw")]
+        for obstacle in environment["obstacles"]:
+            center_mj = to_zdown(obstacle["center"])
+            size = 0.5 * np.asarray(obstacle["size"], dtype=float)
+            if obstacle.get("type") == "cylinder":
+                spec.worldbody.add_geom(name=obstacle["name"], type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+                                        pos=center_mj, size=[size[0], size[2]], rgba=obstacle["rgba"],
+                                        contype=1, conaffinity=2)
+            else:
+                R_mj = flip @ rpy_to_rotmat(obstacle.get("rpy", [0.0, 0.0, 0.0])) @ flip
+                spec.worldbody.add_geom(name=obstacle["name"], type=mujoco.mjtGeom.mjGEOM_BOX,
+                                        pos=center_mj, quat=rotmat_to_quat(R_mj), size=size, rgba=obstacle["rgba"],
+                                        contype=1, conaffinity=2)
+        for name, color in (("start", [0.10, 0.85, 0.20, 0.75]),
+                            ("goal", [0.10, 0.40, 1.00, 0.75])):
+            spec.worldbody.add_geom(name=f"{name}_waypoint", type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                                    pos=to_zdown([environment[name][axis] for axis in ("x", "y", "z")]),
+                                    size=[0.12, 0.12, 0.12], rgba=color,
+                                    contype=0, conaffinity=0)
+        self.model = spec.compile()
+        self.obstacle_geom_ids = {mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM,
+                                                    obstacle["name"]) for obstacle in environment["obstacles"]}
+        self.obstacle_collision = False
         self.data = mujoco.MjData(self.model)
+        root_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "root")
+        root_qpos = self.model.jnt_qposadr[root_id]
+        self.data.qpos[root_qpos:root_qpos + 3] = to_zdown([environment["start"][axis] for axis in ("x", "y", "z")])
+        self.data.qpos[root_qpos + 3:root_qpos + 7] = rotmat_to_quat(
+            flip @ rpy_to_rotmat(start_rpy) @ flip)
         self.model.opt.timestep = 1.0 / PHYSICS_HZ
         self.set_hb_servo_offset()
         mujoco.mj_forward(self.model, self.data)
@@ -253,12 +303,19 @@ class PlantRosNode(Node):
 
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
+        self.start_goal_frames = [
+            (to_zdown([environment[name][axis] for axis in ("x", "y", "z")]),
+             flip @ rpy_to_rotmat([environment[name][axis] for axis in ("roll", "pitch", "yaw")]))
+            for name in ("start", "goal")
+        ]
+        self.planned_frames = []
 
         self.sub_input = self.create_subscription(Input, "/input", self.input_callback, 10)
+        self.sub_planned_pose = self.create_subscription(Cmd, "/planning_poses", self.planned_pose_callback, 50)
         self.sub_impulse_trigger = self.create_subscription(Bool, "/test/impulse_trigger", self.impulse_trigger_callback, 1)
         self.sub_moment_impulse_trigger = self.create_subscription(Bool, "/test/moment_impulse_trigger", self.moment_impulse_trigger_callback, 1)
         self.pub_state = self.create_publisher(MultirotorState, "/multirotor_state", 10)
-        self.viewer_thread = threading.Thread(target=self.viewer_loop, daemon=True)
+        self.viewer_thread = threading.Thread(target=self.viewer_loop)
         self.sim_thread = threading.Thread(target=self.sim_loop, daemon=True)
 
         self.viewer_thread.start()
@@ -364,6 +421,17 @@ class PlantRosNode(Node):
         moment_world_mj = IMPULSE_MOMENT_NM * (R_body_world @ self.impulse_moment_direction_body_mj)
 
         self.data.xfrc_applied[self.bid_body, 3:6] += moment_world_mj
+
+    def planned_pose_callback(self, msg):
+        if not msg.use_quaternion:
+            return
+        quat = np.asarray(msg.quat_cmd, dtype=float)
+        if np.linalg.norm(quat) < 1.0e-9:
+            return
+        # The controller body axes are unchanged; only the world basis changes.
+        R = np.diag([1.0, -1.0, -1.0]) @ quat_to_rotmat(quat / np.linalg.norm(quat))
+        with self.lock:
+            self.planned_frames.append((to_zdown(msg.pos_cmd), R))
 
     def input_callback(self, msg):
         f = np.asarray(msg.f, dtype=float)
@@ -484,6 +552,12 @@ class PlantRosNode(Node):
                     self.apply_x_impulse()
                     self.apply_pitch_moment_impulse()
                     mujoco.mj_step(self.model, self.data)
+                    if not self.obstacle_collision:
+                        for contact in self.data.contact:
+                            if contact.geom1 in self.obstacle_geom_ids or contact.geom2 in self.obstacle_geom_ids:
+                                self.obstacle_collision = True
+                                self.get_logger().error(f"obstacle collision at sim t={self.data.time:.3f} s")
+                                break
                     next_step += dt_step
 
                 while now >= next_pub:
@@ -511,6 +585,33 @@ class PlantRosNode(Node):
         viewer.cam.fixedcamid = cam_id
 
         self.get_logger().info(f"viewer camera: {VIEW_CAMERA_NAME}")
+
+    def update_pose_axes(self, viewer):
+        if not hasattr(viewer, "user_scn"):
+            return
+        scn = viewer.user_scn
+
+        def draw(pos, R, length, alpha):
+            for axis in range(3):
+                if scn.ngeom >= len(scn.geoms):
+                    return
+                rgba = POSE_AXIS_RGBA[axis].copy()
+                rgba[3] = alpha
+                tip = pos + length * R[:, axis]
+                geom = scn.geoms[scn.ngeom]
+                mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_ARROW,
+                                    np.zeros(3), np.zeros(3), np.eye(3).reshape(9), rgba)
+                mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_ARROW,
+                                     POSE_AXIS_WIDTH * length / POSE_AXIS_LENGTH, pos, tip)
+                scn.ngeom += 1
+
+        for pos, R in self.start_goal_frames:
+            draw(pos, R, POSE_AXIS_LENGTH, 1.0)
+        for pos, R in self.planned_frames:
+            draw(pos, R, POSE_TRACE_LENGTH, 0.60)
+        pos = np.array(self.data.xpos[self.bid_body], dtype=float)
+        R = np.array(self.data.xmat[self.bid_body], dtype=float).reshape(3, 3)
+        draw(pos, R, POSE_AXIS_LENGTH, 1.0)
 
     def update_thrust_arrows(self, viewer):
         if not SHOW_THRUST_ARROWS or not hasattr(viewer, "user_scn"):
@@ -548,9 +649,10 @@ class PlantRosNode(Node):
                     if hasattr(viewer, "user_scn"):
                         viewer.user_scn.ngeom = 0
                     self.update_thrust_arrows(viewer)
+                    self.update_pose_axes(viewer)
                     viewer.sync()
 
-                time.sleep(0.002)
+                time.sleep(0.01)
 
     def close(self):
         self.stop_event.set()
@@ -559,7 +661,7 @@ class PlantRosNode(Node):
             self.sim_thread.join(timeout=1.0)
 
         if self.viewer_thread.is_alive():
-            self.viewer_thread.join(timeout=1.0)
+            self.viewer_thread.join()
 
 
 def main():
@@ -568,7 +670,7 @@ def main():
 
     def sigint_handler(signum, frame):
         node.get_logger().info("Ctrl+C received. Shutting down plant...")
-        node.close()
+        node.stop_event.set()
 
     signal.signal(signal.SIGINT, sigint_handler)
 
