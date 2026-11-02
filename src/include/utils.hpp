@@ -418,10 +418,10 @@ inline TargetCMD posPath(double t)
 inline TargetCMD attPath(double t)
 {
   static constexpr double HOVER_SEC = 3.0;
-  static constexpr double TUNE_SEC = 60.0;
+  static constexpr double TUNE_SEC = 40.0;
   static constexpr double Z = 1.0;
   static constexpr double ROLL_AMP = 20.0 * M_PI / 180.0;
-  static constexpr double PITCH_AMP = 60.0 * M_PI / 180.0;
+  static constexpr double PITCH_AMP = 80.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
@@ -850,6 +850,9 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
 
   out.beta << beta_des, beta_des;
   out.alpha.setConstant(alpha_des);
+
+  out.wrench_cmd << moment_cmd, force_cmd;
+  out.wrench_alloc = evaluateA4B2Wrench(out.f, out.beta, out.alpha);
 
   return out;
 }

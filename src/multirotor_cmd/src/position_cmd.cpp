@@ -27,8 +27,8 @@ private:
 
     const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
 
-    // const auto cmd = utils::attPath(t);
-    const auto cmd = utils::posPath(t);
+    const auto cmd = utils::attPath(t);
+    // const auto cmd = utils::posPath(t);
     // const auto cmd = utils::stepAttPath(t);
     // const auto cmd = utils::throughWallPath(t);
     // const auto cmd = utils::circularWallPath(t);

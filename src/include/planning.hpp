@@ -80,12 +80,37 @@ inline Environment loadEnvironment(const std::string& file)
   env.goal_rpy << yaml["goal"]["roll"].as<double>(), yaml["goal"]["pitch"].as<double>(), yaml["goal"]["yaw"].as<double>();
   env.vehicle_half_size = vec(yaml["vehicle"]["half_size"]);
   for (const auto& item : yaml["obstacles"]) {
-    const Eigen::Vector3d size = vec(item["size"]);
+    const std::string type = item["type"] ? item["type"].as<std::string>() : "wall";
+    const Eigen::Vector3d center = vec(item["center"]), size = vec(item["size"]);
     if ((size.array() <= 0.0).any()) throw std::runtime_error("obstacle size must be positive");
+    if (type == "tunnel") {
+      if (item["rpy"]) throw std::runtime_error("tunnel rotation is not supported");
+      const auto offset = item["opening_offset"], opening = item["opening_size"];
+      if (!offset || !opening || offset.size() != 2 || opening.size() != 2) throw std::runtime_error("invalid tunnel opening");
+      const double x0 = center(0) - 0.5 * size(0), x1 = center(0) + 0.5 * size(0);
+      const double z0 = center(2) - 0.5 * size(2), z1 = center(2) + 0.5 * size(2);
+      const double gx = center(0) + offset[0].as<double>(), gz = center(2) + offset[1].as<double>();
+      const double gx0 = gx - 0.5 * opening[0].as<double>(), gx1 = gx + 0.5 * opening[0].as<double>();
+      const double gz0 = gz - 0.5 * opening[1].as<double>(), gz1 = gz + 0.5 * opening[1].as<double>();
+      if (!(x0 < gx0 && gx0 < gx1 && gx1 < x1 && z0 < gz0 && gz0 < gz1 && gz1 < z1))
+        throw std::runtime_error("tunnel opening must lie inside the outer box");
+      const auto addBox = [&](double xa, double xb, double za, double zb) {
+        Box box;
+        box.center << 0.5 * (xa + xb), center(1), 0.5 * (za + zb);
+        box.half_size << 0.5 * (xb - xa), 0.5 * size(1), 0.5 * (zb - za);
+        env.obstacles.push_back(box);
+      };
+      // Tunnel axis is y; the free x-z rectangle is shared by Plant and Planning.
+      addBox(x0, gx0, z0, z1);
+      addBox(gx1, x1, z0, z1);
+      addBox(gx0, gx1, gz1, z1);
+      addBox(gx0, gx1, z0, gz0);
+      continue;
+    }
     // The cylinder's enclosing box keeps RRT, RILS and validation conservative.
-    if (item["type"] && item["type"].as<std::string>() != "cylinder") throw std::runtime_error("unsupported obstacle type");
-    if (item["type"] && std::abs(size(0) - size(1)) > 1.0e-9) throw std::runtime_error("cylinder x/y diameter must match");
-    Box box{vec(item["center"]), 0.5 * size};
+    if (type != "wall" && type != "cylinder") throw std::runtime_error("unsupported obstacle type");
+    if (type == "cylinder" && std::abs(size(0) - size(1)) > 1.0e-9) throw std::runtime_error("cylinder x/y diameter must match");
+    Box box{center, 0.5 * size};
     if (item["rpy"]) box.R = utils::rpyToRot(vec(item["rpy"]));
     env.obstacles.push_back(box);
   }
@@ -358,6 +383,10 @@ inline Trajectory MINCO(const std::vector<Vector6d>& q, const std::vector<double
     }
   }
   for (int d = 0; d < 4; ++d, ++r) { row(r, M - 1, d, 1.0, 1.0); if (d == 0) b.row(r) = q.back().transpose(); }
+  for (int i = 0; i < 8 * M; ++i) {
+    const double scale = A.row(i).norm();
+    A.row(i) /= scale; b.row(i) /= scale;
+  }
   const Eigen::MatrixXd c = A.colPivHouseholderQr().solve(b);
   if (!c.allFinite() || (A * c - b).norm() > 1.0e-4) throw std::runtime_error("MINCO solve failed");
   Trajectory trajectory;
@@ -370,7 +399,7 @@ inline Trajectory MINCO(const std::vector<Vector6d>& q, const std::vector<double
   return trajectory;
 }
 
-// Constrained trajectory optimization ===============================
+// Penalized trajectory optimization =================================
 class Optimization : public Ipopt::TNLP
 {
 public:
@@ -380,8 +409,15 @@ public:
   {
     M_ = static_cast<int>(T0_.size());
     n_ = 6 * (M_ - 1) + M_;
-    for (int i = 1; i < M_; ++i) g_count_ += static_cast<int>(corridor_[i - 1].size() + corridor_[i].size());
-    for (const auto& poly : corridor_) g_count_ += (params::PLANNING_CONSTRAINT_SAMPLES + 1) * (7 + 8 * static_cast<int>(poly.size()));
+    g_count_ = 4 * M_ * (params::PLANNING_CONSTRAINT_SAMPLES + 1);
+    for (int i = 1; i < M_; ++i) {
+      const Eigen::Vector3d p = q0_[i].head<3>();
+      double radius = std::numeric_limits<double>::infinity();
+      for (const auto& plane : corridor_[i - 1]) radius = std::min(radius, plane.d - plane.n.dot(p));
+      for (const auto& plane : corridor_[i]) radius = std::min(radius, plane.d - plane.n.dot(p));
+      if (!std::isfinite(radius) || radius <= 1.0e-5) throw std::runtime_error("SFC waypoint has no interior ball");
+      radius_.push_back(0.9 * radius);
+    }
   }
 
   bool get_nlp_info(Ipopt::Index& n, Ipopt::Index& m, Ipopt::Index& nnz_jac_g,
@@ -394,20 +430,7 @@ public:
   bool get_bounds_info(Ipopt::Index n, Ipopt::Number* x_l, Ipopt::Number* x_u,
                        Ipopt::Index m, Ipopt::Number* g_l, Ipopt::Number* g_u) override
   {
-    for (int i = 0; i < M_ - 1; ++i) {
-      for (int d = 0; d < 3; ++d) {
-        x_l[6 * i + d] = env_.lower(d);
-        x_u[6 * i + d] = env_.upper(d);
-      }
-      for (int d = 3; d < 6; ++d) {
-        x_l[6 * i + d] = -3.0;
-        x_u[6 * i + d] = 3.0;
-      }
-    }
-    for (int i = 0; i < M_; ++i) {
-      x_l[6 * (M_ - 1) + i] = params::PLANNING_MIN_SEGMENT_SEC;
-      x_u[6 * (M_ - 1) + i] = params::PLANNING_MAX_SEGMENT_SEC;
-    }
+    for (int i = 0; i < n; ++i) { x_l[i] = -1.0e19; x_u[i] = 1.0e19; }
     for (Ipopt::Index j = 0; j < m; ++j) { g_l[j] = -1.0e19; g_u[j] = 0.0; }
     return n == n_ && m == g_count_;
   }
@@ -417,8 +440,14 @@ public:
                           Ipopt::Index, bool init_lambda, Ipopt::Number*) override
   {
     if (!init_x || init_z || init_lambda || n != n_) return false;
-    for (int i = 1; i < M_; ++i) for (int d = 0; d < 6; ++d) x[6 * (i - 1) + d] = q0_[i](d);
-    for (int i = 0; i < M_; ++i) x[6 * (M_ - 1) + i] = T0_[i];
+    for (int i = 1; i < M_; ++i) {
+      for (int d = 0; d < 3; ++d) x[6 * (i - 1) + d] = 0.0;
+      for (int d = 3; d < 6; ++d) x[6 * (i - 1) + d] = q0_[i](d);
+    }
+    for (int i = 0; i < M_; ++i) {
+      const double T = std::clamp(T0_[i], params::PLANNING_MIN_SEGMENT_SEC + 1.0e-4, params::PLANNING_MAX_SEGMENT_SEC - 1.0e-4);
+      x[6 * (M_ - 1) + i] = std::log((T - params::PLANNING_MIN_SEGMENT_SEC) / (params::PLANNING_MAX_SEGMENT_SEC - T));
+    }
     return true;
   }
 
@@ -426,21 +455,46 @@ public:
   {
     std::vector<Vector6d> q = q0_;
     std::vector<double> T = T0_;
-    for (int i = 1; i < M_; ++i) for (int d = 0; d < 6; ++d) q[i](d) = x[6 * (i - 1) + d];
-    for (int i = 0; i < M_; ++i) T[i] = x[6 * (M_ - 1) + i];
+    for (int i = 1; i < M_; ++i) {
+      const Eigen::Vector3d xi(x[6 * (i - 1)], x[6 * (i - 1) + 1], x[6 * (i - 1) + 2]);
+      // Wang et al. (2022), Eq. (78): inscribed-ball map eliminates waypoint SFC constraints.
+      q[i].head<3>() = q0_[i].head<3>() + 2.0 * radius_[i - 1] * xi / (1.0 + xi.squaredNorm());
+      for (int d = 3; d < 6; ++d) q[i](d) = x[6 * (i - 1) + d];
+    }
+    for (int i = 0; i < M_; ++i) {
+      const double tau = x[6 * (M_ - 1) + i];
+      // Positive-time variable map with a finite upper bound keeps MINCO numerically conditioned.
+      const double logistic = tau >= 0.0 ? 1.0 / (1.0 + std::exp(-tau)) : std::exp(tau) / (1.0 + std::exp(tau));
+      T[i] = params::PLANNING_MIN_SEGMENT_SEC + (params::PLANNING_MAX_SEGMENT_SEC - params::PLANNING_MIN_SEGMENT_SEC) * logistic;
+    }
     return MINCO(q, T);
   }
 
   double cost(const Ipopt::Number* x) const
   {
-    // Liu et al. (2024), Eq. (23a): snap integral and segment-time regularizer.
+    // Liu et al. (2024), Eq. (24): snap and time cost with cubic integral penalties.
     const Trajectory tr = trajectory(x);
+    const auto V = [](double value) { return value > 0.0 ? value * value * value : 0.0; };
+    const auto body_vertices = utils::boxVertices((env_.vehicle_half_size.array() + params::PLANNING_RRT_CLEARANCE).matrix());
     double objective = params::PLANNING_TIME_WEIGHT * tr.duration();
-    for (const auto& seg : tr.segments) {
+    for (int i = 0; i < M_; ++i) {
+      const auto& seg = tr.segments[i];
       const int K = params::PLANNING_CONSTRAINT_SAMPLES;
       for (int j = 0; j <= K; ++j) {
+        const double t = seg.T * j / K;
+        const Vector6d z = seg.derivative(t, 0), dz = seg.derivative(t, 1), ddz = seg.derivative(t, 2);
+        const Eigen::Matrix3d R = utils::quatToRot(utils::sigmaToQuat(z.tail<3>()));
+        const Eigen::Vector3d omega = utils::sigmaToBodyOmega(z.tail<3>(), dz.tail<3>());
+        double density = seg.derivative(t, 4).squaredNorm();
+        density += params::PLANNING_PENALTY_VEL * V(dz.head<3>().squaredNorm() - std::pow(params::PLANNING_MAX_VEL - params::PLANNING_VEL_OPT_MARGIN, 2));
+        density += params::PLANNING_PENALTY_ACC * V(ddz.head<3>().squaredNorm() - std::pow(params::PLANNING_MAX_ACC, 2));
+        density += params::PLANNING_PENALTY_OMEGA * V(omega.squaredNorm() - std::pow(params::PLANNING_MAX_OMEGA - params::PLANNING_OMEGA_OPT_MARGIN_RAD_S, 2));
+        for (const auto& v : body_vertices) {
+          const Eigen::Vector3d vertex = z.head<3>() + R * v;
+          for (const auto& plane : corridor_[i]) density += params::PLANNING_PENALTY_SFC * V(plane.n.dot(vertex) - plane.d + params::PLANNING_SFC_OPT_MARGIN);
+        }
         const double weight = (j == 0 || j == K) ? 0.5 : 1.0;
-        objective += weight * seg.derivative(seg.T * j / K, 4).squaredNorm() * seg.T / K;
+        objective += weight * density * seg.T / K; // Wang et al. (2022), Eq. (90): trapezoidal quadrature.
       }
     }
     return objective;
@@ -448,37 +502,18 @@ public:
 
   void constraints(const Ipopt::Number* x, std::vector<double>& g) const
   {
-    // Liu et al. (2024), Eqs. (23d)-(23k): direct sampled inequalities.
+    // Roll and pitch remain hard constraints; Liu et al. (2024), Eq. (23h)-(23k) are penalized in cost().
     const Trajectory tr = trajectory(x);
     g.clear();
     g.reserve(g_count_);
-    for (int i = 1; i < M_; ++i) {
-      const Eigen::Vector3d p = tr.segments[i - 1].derivative(tr.segments[i - 1].T, 0).head<3>();
-      for (const auto& plane : corridor_[i - 1]) g.push_back(plane.n.dot(p) - plane.d);
-      for (const auto& plane : corridor_[i]) g.push_back(plane.n.dot(p) - plane.d);
-    }
-    const auto body_vertices = utils::boxVertices((env_.vehicle_half_size.array() + params::PLANNING_RRT_CLEARANCE).matrix());
-    for (int i = 0; i < M_; ++i) {
-      const auto& seg = tr.segments[i];
+    for (const auto& seg : tr.segments) {
       for (int j = 0; j <= params::PLANNING_CONSTRAINT_SAMPLES; ++j) {
-        const double t = seg.T * j / params::PLANNING_CONSTRAINT_SAMPLES;
-        const Vector6d z = seg.derivative(t, 0);
-        const Vector6d dz = seg.derivative(t, 1);
-        const Vector6d ddz = seg.derivative(t, 2);
-        const Eigen::Matrix3d R = utils::quatToRot(utils::sigmaToQuat(z.tail<3>()));
-        const Eigen::Vector3d rpy = utils::rotToRpy(R);
-        const Eigen::Vector3d omega = utils::sigmaToBodyOmega(z.tail<3>(), dz.tail<3>());
-        g.push_back(dz.head<3>().squaredNorm() - std::pow(params::PLANNING_MAX_VEL, 2)); // Eq. (23h)
-        g.push_back(ddz.head<3>().squaredNorm() - std::pow(params::PLANNING_MAX_ACC, 2)); // Eq. (23i)
-        g.push_back(omega.squaredNorm() - std::pow(params::PLANNING_MAX_OMEGA - params::PLANNING_OMEGA_OPT_MARGIN_RAD_S, 2)); // Eq. (23j)
+        const Vector6d z = seg.derivative(seg.T * j / params::PLANNING_CONSTRAINT_SAMPLES, 0);
+        const Eigen::Vector3d rpy = utils::rotToRpy(utils::quatToRot(utils::sigmaToQuat(z.tail<3>())));
         g.push_back(rpy(0) - params::PLANNING_ROLL_LIMIT_RAD + params::PLANNING_ROLL_OPT_MARGIN_RAD);
         g.push_back(-rpy(0) - params::PLANNING_ROLL_LIMIT_RAD + params::PLANNING_ROLL_OPT_MARGIN_RAD);
         g.push_back(rpy(1) - params::PLANNING_PITCH_LIMIT_RAD);
         g.push_back(-rpy(1) - params::PLANNING_PITCH_LIMIT_RAD);
-        for (const auto& v : body_vertices) {
-          const Eigen::Vector3d vertex = z.head<3>() + R * v;
-          for (const auto& plane : corridor_[i]) g.push_back(plane.n.dot(vertex) - plane.d); // Eq. (23k)
-        }
       }
     }
   }
@@ -547,7 +582,7 @@ public:
 private:
   const Environment& env_;
   std::vector<Vector6d> q0_;
-  std::vector<double> T0_;
+  std::vector<double> T0_, radius_;
   std::vector<Corridor> corridor_;
   int M_{0}, n_{0}, g_count_{0};
   Ipopt::SolverReturn status_{Ipopt::UNASSIGNED};
@@ -573,12 +608,13 @@ inline bool optimize(const Environment& env, const std::vector<Eigen::Vector3d>&
   app->Options()->SetStringValue("hessian_approximation", "limited-memory");
   app->Options()->SetStringValue("mu_strategy", "adaptive");
   app->Options()->SetIntegerValue("max_iter", params::PLANNING_IPOPT_MAX_ITER);
+  app->Options()->SetNumericValue("max_cpu_time", params::PLANNING_IPOPT_MAX_CPU_SEC);
   app->Options()->SetNumericValue("tol", params::PLANNING_IPOPT_TOLERANCE);
   app->Options()->SetIntegerValue("print_level", 0);
   if (app->Initialize() != Ipopt::Solve_Succeeded) return false;
   const auto status = app->OptimizeTNLP(nlp);
   if (status != Ipopt::Solve_Succeeded && status != Ipopt::Solved_To_Acceptable_Level) {
-    if (status == Ipopt::Maximum_Iterations_Exceeded && !nlp->solution().empty()) {
+    if ((status == Ipopt::Maximum_Iterations_Exceeded || status == Ipopt::Maximum_CpuTime_Exceeded) && !nlp->solution().empty()) {
       const auto statistics = app->Statistics();
       if (Ipopt::IsValid(statistics)) {
         Ipopt::Number dual, constraint, complementarity, kkt;
@@ -595,15 +631,32 @@ inline bool optimize(const Environment& env, const std::vector<Eigen::Vector3d>&
       }
       if (!g.empty() && violation <= 1.0e-4) {
         result = nlp->trajectory(nlp->solution().data());
-        std::fprintf(stderr, "IPOPT iteration limit; feasible candidate (sampled violation=%.6g) sent to dense validation\n", violation);
-        return true;
+        std::fprintf(stderr, "IPOPT limit; feasible candidate (sampled violation=%.6g) sent to dense validation\n", violation);
       }
       std::fprintf(stderr, "IPOPT sampled constraint violation=%.6g\n", violation);
     }
-    std::fprintf(stderr, "IPOPT status=%d, segments=%zu\n", static_cast<int>(status), corridor.size());
-    return false;
+    if (result.segments.empty()) {
+      std::fprintf(stderr, "IPOPT status=%d, segments=%zu\n", static_cast<int>(status), corridor.size());
+      return false;
+    }
   }
-  result = nlp->trajectory(nlp->solution().data());
+  if (result.segments.empty()) result = nlp->trajectory(nlp->solution().data());
+  double scale = 1.0;
+  for (const auto& seg : result.segments) {
+    const int count = std::max(1, static_cast<int>(std::ceil(seg.T / params::PLANNING_VALIDATION_DT)));
+    for (int j = 0; j <= count; ++j) {
+      const double t = seg.T * j / count;
+      const Vector6d z = seg.derivative(t, 0), dz = seg.derivative(t, 1), ddz = seg.derivative(t, 2);
+      scale = std::max(scale, dz.head<3>().norm() / params::PLANNING_MAX_VEL);
+      scale = std::max(scale, std::sqrt(ddz.head<3>().norm() / params::PLANNING_MAX_ACC));
+      scale = std::max(scale, utils::sigmaToBodyOmega(z.tail<3>(), dz.tail<3>()).norm() / params::PLANNING_MAX_OMEGA);
+    }
+  }
+  if (scale > 1.0) {
+    scale *= 1.01;
+    // MINCO coefficients use normalized time; changing T alone preserves the complete pose path.
+    for (auto& seg : result.segments) seg.T *= scale;
+  }
   return true;
 }
 

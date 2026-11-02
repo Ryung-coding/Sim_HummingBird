@@ -19,16 +19,20 @@ from std_msgs.msg import Bool
 
 from multirotor_interfaces.msg import Cmd, Input, MultirotorState
 
-# control rate and physics rate
+# Simulation -------------------------------------------------------
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
 HB_SERVO_TAU_SEC = 0.0
 
-# Servo start offset [deg]
+# HummingBird ------------------------------------------------------
 # order: [alpha1, alpha2, alpha3, alpha4, beta1, beta2]
 HB_SERVO_OFFSET_DEG = np.array([0.0, 0.0, 0.0, 0.0, -0.0, 0.0], dtype=float)
+HB_N_THRUST = 4
+HB_N_BETA = 2
+HB_N_ALPHA = 4
+HB_N_CTRL = HB_N_THRUST + 4 + HB_N_ALPHA
 
-# Sensor noise standard deviations
+# Sensor noise -----------------------------------------------------
 USE_NOISE = False
 SIG_POS = 0.005
 SIG_VEL = 0.03
@@ -36,32 +40,18 @@ SIG_GYRO = 0.01
 SIG_ACC = 0.10
 SIG_ENCODER = 0.002
 
-# Model dimensions
-HB_N_THRUST = 4
-HB_N_BETA = 2
-HB_N_ALPHA = 4
-HB_N_CTRL = HB_N_THRUST + 4 + HB_N_ALPHA
+# Aerodynamic disturbance -----------------------------------------
+USE_TURBULENCE_DISTURBANCE = False
+ROTOR_RADIUS_M = 0.1143  # HB_model.xml propeller mesh scale; OBJ radius is approximately 1.
+TURBULENCE_NOISE_RATIO = 0.03  # heuristic axial force std / commanded thrust, not fitted by the cited papers
+TURBULENCE_NOISE_TIME_CONSTANT_SEC = 0.2
+TURBULENCE_SEED = 20261015
+WALL_RAY_DIRECTIONS_MJ = np.array([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0],
+                                   [0.0, 1.0, 0.0], [0.0, -1.0, 0.0]], dtype=float)
+GROUND_RAY_DIRECTION_MJ = np.array([0.0, 0.0, -1.0], dtype=float)
 
-# Visualization parameters
-USE_FIXED_CAMERA = False
-SHOW_THRUST_ARROWS = True
+# Test disturbances ------------------------------------------------
 USE_RANDOM_DISTURBANCE = False
-
-
-VIEW_CAMERA_NAME = "front_camera"
-    
-THRUST_ARROW_SCALE = 0.025
-THRUST_ARROW_MIN_LEN = 0.15
-THRUST_ARROW_MAX_LEN = 1.20
-THRUST_ARROW_WIDTH = 0.008
-THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
-POSE_AXIS_RGBA = np.array([[1.0, 0.15, 0.15, 1.0], [0.15, 1.0, 0.15, 1.0],
-                           [0.15, 0.35, 1.0, 1.0]], dtype=np.float32)
-POSE_AXIS_LENGTH = 0.42
-POSE_TRACE_LENGTH = 0.25
-POSE_AXIS_WIDTH = 0.012
-PROP_SPIN_MAX_RAD_PER_SEC = 80.0
-
 RANDOM_DISTURBANCE_DIRECTION_ZDOWN = np.array([1.0, 0.0, 0.0], dtype=float)
 RANDOM_DISTURBANCE_FORCE_MAX_N = 10.0
 RANDOM_DISTURBANCE_TIME_CONSTANT = 0.2
@@ -69,15 +59,30 @@ RANDOM_DISTURBANCE_SEED = 20260916
 
 USE_X_IMPULSE = False
 USE_PITCH_MOMENT_IMPULSE = False
-
 IMPULSE_DIRECTION_ZDOWN = np.array([1.0, 0.0, 0.0], dtype=float)
 IMPULSE_FORCE_N = 10.0
-
 IMPULSE_MOMENT_DIRECTION_BODY_ZDOWN = np.array([0.0, 1.0, 0.0], dtype=float)
 IMPULSE_MOMENT_NM = 0.5
-
 IMPULSE_DURATION_SEC = 0.1
 
+# Viewer -----------------------------------------------------------
+USE_FIXED_CAMERA = False
+SHOW_THRUST_ARROWS = True
+SHOW_TURBULENCE_ARROWS = True
+VIEW_CAMERA_NAME = "front_camera"
+THRUST_ARROW_SCALE = 0.025
+THRUST_ARROW_MIN_LEN = 0.15
+THRUST_ARROW_MAX_LEN = 1.20
+THRUST_ARROW_WIDTH = 0.008
+THRUST_ARROW_RGBA = np.array([1.00, 0.20, 0.05, 0.90], dtype=np.float32)
+TURBULENCE_ARROW_SCALE = 0.5
+TURBULENCE_ARROW_RGBA = np.array([0.20, 0.85, 1.00, 0.95], dtype=np.float32)
+POSE_AXIS_RGBA = np.array([[1.0, 0.15, 0.15, 1.0], [0.15, 1.0, 0.15, 1.0],
+                           [0.15, 0.35, 1.0, 1.0]], dtype=np.float32)
+POSE_AXIS_LENGTH = 0.42
+POSE_TRACE_LENGTH = 0.25
+POSE_AXIS_WIDTH = 0.012
+PROP_SPIN_MAX_RAD_PER_SEC = 80.0
 
 class LPF:
     """First-order low-pass filter: y_dot = (x - y) / tau."""
@@ -99,6 +104,37 @@ class LPF:
 
 def to_zdown(v):
     return np.array([v[0], -v[1], -v[2]], dtype=float)
+
+def expand_obstacles(obstacles):
+    expanded = []
+    for obstacle in obstacles:
+        kind = obstacle.get("type", "wall")
+        if kind != "tunnel":
+            if kind not in ("wall", "cylinder"):
+                raise ValueError(f"unsupported obstacle type: {kind}")
+            expanded.append(obstacle)
+            continue
+
+        if "rpy" in obstacle:
+            raise ValueError("tunnel rotation is not supported")
+        center = np.asarray(obstacle["center"], dtype=float)
+        size = np.asarray(obstacle["size"], dtype=float)
+        offset = np.asarray(obstacle["opening_offset"], dtype=float)
+        opening = np.asarray(obstacle["opening_size"], dtype=float)
+        if center.shape != (3,) or size.shape != (3,) or offset.shape != (2,) or opening.shape != (2,) or np.any(size <= 0.0):
+            raise ValueError("invalid tunnel center, size, or opening")
+        x0, x1 = center[0] - size[0] / 2.0, center[0] + size[0] / 2.0
+        z0, z1 = center[2] - size[2] / 2.0, center[2] + size[2] / 2.0
+        gx0, gx1 = center[0] + offset[0] - opening[0] / 2.0, center[0] + offset[0] + opening[0] / 2.0
+        gz0, gz1 = center[2] + offset[1] - opening[1] / 2.0, center[2] + offset[1] + opening[1] / 2.0
+        if not (x0 < gx0 < gx1 < x1 and z0 < gz0 < gz1 < z1):
+            raise ValueError("tunnel opening must lie inside the outer box")
+        for suffix, xa, xb, za, zb in (("left", x0, gx0, z0, z1), ("right", gx1, x1, z0, z1),
+                                       ("top", gx0, gx1, gz1, z1), ("bottom", gx0, gx1, z0, gz0)):
+            expanded.append({"name": f"{obstacle['name']}_{suffix}",
+                             "center": [(xa + xb) / 2.0, center[1], (za + zb) / 2.0],
+                             "size": [xb - xa, size[1], zb - za], "rgba": obstacle["rgba"]})
+    return expanded
 
 def quat_to_rotmat(q):
     w, x, y, z = q
@@ -188,21 +224,22 @@ class PlantRosNode(Node):
             environment = yaml.safe_load(environment_file)
         if environment["frame"] != "controller_z_down":
             raise ValueError("environment frame must be controller_z_down")
+        obstacles = expand_obstacles(environment["obstacles"])
         spec = mujoco.MjSpec.from_file(xml_path)
         flip = np.diag([1.0, -1.0, -1.0])
         start_rpy = [environment["start"][axis] for axis in ("roll", "pitch", "yaw")]
-        for obstacle in environment["obstacles"]:
+        for obstacle in obstacles:
             center_mj = to_zdown(obstacle["center"])
             size = 0.5 * np.asarray(obstacle["size"], dtype=float)
             if obstacle.get("type") == "cylinder":
                 spec.worldbody.add_geom(name=obstacle["name"], type=mujoco.mjtGeom.mjGEOM_CYLINDER,
                                         pos=center_mj, size=[size[0], size[2]], rgba=obstacle["rgba"],
-                                        contype=1, conaffinity=2)
+                                        contype=1, conaffinity=2, group=2)
             else:
                 R_mj = flip @ rpy_to_rotmat(obstacle.get("rpy", [0.0, 0.0, 0.0])) @ flip
                 spec.worldbody.add_geom(name=obstacle["name"], type=mujoco.mjtGeom.mjGEOM_BOX,
                                         pos=center_mj, quat=rotmat_to_quat(R_mj), size=size, rgba=obstacle["rgba"],
-                                        contype=1, conaffinity=2)
+                                        contype=1, conaffinity=2, group=2)
         for name, color in (("start", [0.10, 0.85, 0.20, 0.75]),
                             ("goal", [0.10, 0.40, 1.00, 0.75])):
             spec.worldbody.add_geom(name=f"{name}_waypoint", type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -211,7 +248,7 @@ class PlantRosNode(Node):
                                     contype=0, conaffinity=0)
         self.model = spec.compile()
         self.obstacle_geom_ids = {mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM,
-                                                    obstacle["name"]) for obstacle in environment["obstacles"]}
+                                                    obstacle["name"]) for obstacle in obstacles}
         self.obstacle_collision = False
         self.data = mujoco.MjData(self.model)
         root_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "root")
@@ -253,6 +290,18 @@ class PlantRosNode(Node):
         self.bid_body = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, self.body_name)
         if self.bid_body < 0:
             raise RuntimeError(f"body not found: {self.body_name}")
+        floor_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+        if floor_id < 0 or ROTOR_RADIUS_M <= 0.0 or TURBULENCE_NOISE_TIME_CONSTANT_SEC <= 0.0:
+            raise RuntimeError("invalid floor or turbulence parameters")
+        self.floor_z_mj = float(self.data.geom_xpos[floor_id, 2])
+        self.wall_geom_group = np.array([0, 0, 1, 0, 0, 0], dtype=np.uint8)
+        self.turbulence_rng = np.random.default_rng(TURBULENCE_SEED)
+        self.turbulence_noise_state = np.zeros(HB_N_THRUST, dtype=float)
+        self.turbulence_force_mj = np.zeros((HB_N_THRUST, 3), dtype=float)
+        self.turbulence_gain = np.ones((HB_N_THRUST, 2), dtype=float)
+        self.turbulence_range = np.full((HB_N_THRUST, 2), np.inf, dtype=float)
+        self.turbulence_delta_t = np.zeros(HB_N_THRUST, dtype=float)
+        self.turbulence_noise_t = np.zeros(HB_N_THRUST, dtype=float)
 
         self.s_adr = self.model.sensor_adr
         self.s_dim = self.model.sensor_dim
@@ -373,6 +422,56 @@ class PlantRosNode(Node):
 
         return np.array(self.data.sensordata[adr:adr + dim], dtype=float)
 
+    def apply_turbulence_disturbance(self):
+        self.turbulence_force_mj.fill(0.0)
+        self.turbulence_gain.fill(1.0)
+        self.turbulence_range.fill(np.inf)
+        self.turbulence_delta_t.fill(0.0)
+        self.turbulence_noise_t.fill(0.0)
+        if not USE_TURBULENCE_DISTURBANCE:
+            return
+
+        decay = math.exp(-1.0 / (PHYSICS_HZ * TURBULENCE_NOISE_TIME_CONSTANT_SEC))
+        self.turbulence_noise_state *= decay
+        self.turbulence_noise_state += math.sqrt(1.0 - decay * decay) * self.turbulence_rng.standard_normal(HB_N_THRUST)
+        geomid = np.array([-1], dtype=np.int32)
+
+        for i, site_id in enumerate(self.prop_site_ids):
+            T0 = float(np.clip(self.ctrl[i], *self.model.actuator_ctrlrange[i]))
+            pos = np.asarray(self.data.site_xpos[site_id], dtype=float)
+            R = np.asarray(self.data.site_xmat[site_id], dtype=float).reshape(3, 3)
+            a = R @ self.model.actuator_gear[i, :3]
+            a /= np.linalg.norm(a)
+            x = np.inf
+            for direction in WALL_RAY_DIRECTIONS_MJ:
+                distance = mujoco.mj_ray(self.model, self.data, pos, direction, self.wall_geom_group, True, -1, geomid)
+                if 0.0 <= distance < x:
+                    x = distance
+            below = mujoco.mj_ray(self.model, self.data, pos, GROUND_RAY_DIRECTION_MJ, self.wall_geom_group, True, -1, geomid)
+            z = max(0.0, pos[2] - self.floor_z_mj)
+            if below >= 0.0:
+                z = min(z, below)
+
+            # Garofano-Soldado et al. (2022), Eqs. (7), (13)-(14): ground effect for tilted rotors.
+            theta = math.acos(float(np.clip(a[2], 0.0, 1.0)))
+            fc = max(0.0, 0.415 - 0.712 * math.sin(theta) + 0.361 * math.cos(theta))
+            KG = 1.0 / (1.0 - (ROTOR_RADIUS_M / (4.0 * max(z, 0.6 * ROTOR_RADIUS_M))) ** 2 * fc) if a[2] > 0.0 else 1.0
+            # Sanchez-Cuevas et al. (2021), Fig. 11: approximately 1% thrust loss near a wall.
+            wall_factor = float(np.clip((3.8 - x / ROTOR_RADIUS_M) / 2.5, 0.0, 1.0))
+            KW = 1.0 - 0.01 * wall_factor ** 3
+            delta_t = T0 * (KG + KW - 2.0)
+            ground_factor = float(np.clip((4.0 - z / ROTOR_RADIUS_M) / 3.4, 0.0, 1.0))
+            noise_t = T0 * TURBULENCE_NOISE_RATIO * max(ground_factor, wall_factor) * self.turbulence_noise_state[i]
+            force = (delta_t + noise_t) * a
+            r = pos - self.data.xipos[self.bid_body]
+            self.data.xfrc_applied[self.bid_body, :3] += force
+            self.data.xfrc_applied[self.bid_body, 3:6] += np.cross(r, force)
+            self.turbulence_force_mj[i] = force
+            self.turbulence_gain[i] = [KG, KW]
+            self.turbulence_range[i] = [x, z]
+            self.turbulence_delta_t[i] = delta_t
+            self.turbulence_noise_t[i] = noise_t
+
     def apply_random_disturbance(self):
         self.random_disturbance_force_mj.fill(0.0)
 
@@ -483,7 +582,8 @@ class PlantRosNode(Node):
 
         pos = to_zdown(pos_mj)
         vel = to_zdown(vel_mj)
-        disturbance_force = to_zdown(self.random_disturbance_force_mj)
+        disturbance_force = to_zdown(self.data.xfrc_applied[self.bid_body, :3])
+        disturbance_moment = to_zdown(self.data.xfrc_applied[self.bid_body, 3:6])
 
         beta = np.array([self.sensing_state(self.sid_encoder_beta1)[0], self.sensing_state(self.sid_encoder_beta2)[0],], dtype=float)
 
@@ -527,6 +627,13 @@ class PlantRosNode(Node):
 
         msg.imu_acc = imu_acc.tolist()
         msg.disturbance_force = disturbance_force.tolist()
+        msg.disturbance_moment = disturbance_moment.tolist()
+        msg.rotor_wall_distance = self.turbulence_range[:, 0].tolist()
+        msg.rotor_ground_distance = self.turbulence_range[:, 1].tolist()
+        msg.rotor_ground_gain = self.turbulence_gain[:, 0].tolist()
+        msg.rotor_wall_gain = self.turbulence_gain[:, 1].tolist()
+        msg.rotor_thrust_delta = self.turbulence_delta_t.tolist()
+        msg.rotor_thrust_noise = self.turbulence_noise_t.tolist()
 
         msg.beta = beta.tolist()
         msg.alpha = alpha.tolist()
@@ -548,6 +655,7 @@ class PlantRosNode(Node):
                     self.apply_control()
                     self.data.xfrc_applied[self.bid_body, :] = 0.0
                     self.update_prop_visuals()
+                    self.apply_turbulence_disturbance()
                     self.apply_random_disturbance()
                     self.apply_x_impulse()
                     self.apply_pitch_moment_impulse()
@@ -572,6 +680,10 @@ class PlantRosNode(Node):
 
     def set_viewer_camera(self, viewer):
         if not USE_FIXED_CAMERA:
+            viewer.cam.lookat[:] = 0.5 * (self.start_goal_frames[0][0] + self.start_goal_frames[1][0])
+            viewer.cam.distance = 10.0
+            viewer.cam.azimuth = 90.0
+            viewer.cam.elevation = -25.0
             self.get_logger().info("viewer camera: free camera")
             return
 
@@ -640,6 +752,22 @@ class PlantRosNode(Node):
             mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_ARROW, THRUST_ARROW_WIDTH, pos, tip)
             scn.ngeom += 1
 
+    def update_turbulence_arrows(self, viewer):
+        if not SHOW_TURBULENCE_ARROWS or not hasattr(viewer, "user_scn"):
+            return
+        scn = viewer.user_scn
+        for i, site_id in enumerate(self.prop_site_ids):
+            force = self.turbulence_force_mj[i]
+            if np.linalg.norm(force) < 1.0e-3 or scn.ngeom >= len(scn.geoms):
+                continue
+            pos = np.array(self.data.site_xpos[site_id], dtype=np.float64)
+            tip = pos + TURBULENCE_ARROW_SCALE * force
+            geom = scn.geoms[scn.ngeom]
+            mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_ARROW, np.zeros(3, dtype=np.float64),
+                                np.zeros(3, dtype=np.float64), np.eye(3, dtype=np.float64).reshape(9), TURBULENCE_ARROW_RGBA)
+            mujoco.mjv_connector(geom, mujoco.mjtGeom.mjGEOM_ARROW, THRUST_ARROW_WIDTH, pos, tip)
+            scn.ngeom += 1
+
     def viewer_loop(self):
         with mujoco.viewer.launch_passive(self.model, self.data) as viewer:
             self.set_viewer_camera(viewer)
@@ -649,7 +777,15 @@ class PlantRosNode(Node):
                     if hasattr(viewer, "user_scn"):
                         viewer.user_scn.ngeom = 0
                     self.update_thrust_arrows(viewer)
+                    self.update_turbulence_arrows(viewer)
                     self.update_pose_axes(viewer)
+                    if USE_TURBULENCE_DISTURBANCE:
+                        values = "\n".join(f"R{i + 1} x={self.turbulence_range[i, 0]:.2f} z={self.turbulence_range[i, 1]:.2f} "
+                                           f"KG={self.turbulence_gain[i, 0]:.3f} KW={self.turbulence_gain[i, 1]:.3f} "
+                                           f"dT={self.turbulence_delta_t[i]:+.3f} noise={self.turbulence_noise_t[i]:+.3f} N"
+                                           for i in range(HB_N_THRUST))
+                        viewer.set_texts((mujoco.mjtFontScale.mjFONTSCALE_100, mujoco.mjtGridPos.mjGRID_TOPRIGHT,
+                                          "Rotor disturbance", values))
                     viewer.sync()
 
                 time.sleep(0.01)
