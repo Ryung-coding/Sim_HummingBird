@@ -1,0 +1,96 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 30; 30; 35
+    Fixed Frame: map
+    Frame Rate: 30
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Ground grid
+      Enabled: true
+      Cell Size: 1
+      Color: 80; 80; 80
+      Plane: XY
+      Plane Cell Count: 20
+      Alpha: 0.35
+    - Class: rviz_default_plugins/TF
+      Name: SLAM frames
+      Enabled: true
+      Show Names: true
+      Show Arrows: true
+    - Class: rviz_default_plugins/Map
+      Name: RTAB 2D map
+      Enabled: true
+      Topic:
+        Value: /rtabmap/map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Color Scheme: map
+      Alpha: 0.45
+    - Class: rviz_default_plugins/PointCloud2
+      Name: RTAB 3D cloud
+      Enabled: false
+      Topic:
+        Value: /rtabmap/cloud_map
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: RGB8
+    - Class: rviz_default_plugins/PointCloud2
+      Name: OctoMap occupied voxels
+      Enabled: false
+      Topic:
+        Value: /rtabmap/octomap_occupied_space
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Boxes
+      Size (m): 0.2
+      Color Transformer: FlatColor
+      Color: 240; 65; 45
+      Alpha: 0.48
+    - Class: rviz_default_plugins/PointCloud2
+      Name: EDT observed free distance
+      Enabled: false
+      Topic:
+        Value: /map_edt/observed_distance
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: Intensity
+      Channel Name: intensity
+      Use rainbow: true
+      Autocompute Intensity Bounds: true
+      Alpha: 0.85
+    - Class: rviz_default_plugins/MarkerArray
+      Name: KICK subgoals and optimized path
+      Enabled: true
+      Topic:
+        Value: /kick/markers
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+    - Class: rviz_default_plugins/Image
+      Name: Front RGB camera
+      Enabled: false
+      Topic:
+        Value: /camera/rgb/image_raw
+        Reliability Policy: Reliable
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 13
+      Focal Point:
+        X: 3.0
+        Y: 0.0
+        Z: 1.0
+      Pitch: 1.35
+      Yaw: 0.8
+Window Geometry:
+  X: 20
+  Y: 60
+  Width: 800
+  Height: 850

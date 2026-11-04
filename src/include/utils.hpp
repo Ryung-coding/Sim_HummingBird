@@ -349,6 +349,24 @@ inline Eigen::Matrix<double, 6, 1> evaluateA4B2Wrench(const Eigen::Vector4d& f, 
 }
 
 // Path utils =========================================================
+inline TargetCMD mapCHK(double t)
+{
+  static constexpr double HOLD_SEC = 3.0;
+  static constexpr double TRAVEL_SEC = 24.0;
+  static constexpr double DIST_M = 6.0;
+
+  TargetCMD cmd;
+  cmd.z = 1.0;  // altitude-up command; position_cmd converts it to controller z-down
+  const double u = std::clamp((t - HOLD_SEC) / TRAVEL_SEC, 0.0, 1.0);
+  const double s = u * u * u * (10.0 + u * (-15.0 + 6.0 * u));
+  cmd.x = DIST_M * s;
+  if (t > HOLD_SEC && t < HOLD_SEC + TRAVEL_SEC) {
+    cmd.vel.x() = DIST_M * 30.0 * u * u * (1.0 - u) * (1.0 - u) / TRAVEL_SEC;
+    cmd.acc.x() = DIST_M * 60.0 * u * (1.0 - u) * (1.0 - 2.0 * u) / (TRAVEL_SEC * TRAVEL_SEC);
+  }
+  return cmd;
+}
+
 inline TargetCMD posPath(double t)
 {
   static constexpr double HOVER_SEC = 3.0;

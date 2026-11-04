@@ -6,6 +6,7 @@
 #include <Eigen/Dense>
 #include <cmath>
 #include <functional>
+#include <string>
 #include <params.hpp>
 #include <utils.hpp>
 
@@ -17,7 +18,8 @@ public:
     d_compensation_ = declare_parameter<bool>("use_measured_disturbance", false);
 
     sub_cmd_ = this->create_subscription<multirotor_interfaces::msg::Cmd>("/cmd", 10, std::bind(&WrenchController::onCmd, this, std::placeholders::_1));
-    sub_state_ = this->create_subscription<multirotor_interfaces::msg::MultirotorState>("/multirotor_state", 10, std::bind(&WrenchController::onState, this, std::placeholders::_1));
+    const auto state_topic = declare_parameter<std::string>("state_topic", "/multirotor_state");
+    sub_state_ = this->create_subscription<multirotor_interfaces::msg::MultirotorState>(state_topic, 10, std::bind(&WrenchController::onState, this, std::placeholders::_1));
     pub_wrench_ = this->create_publisher<multirotor_interfaces::msg::Wrench>("/wrench", 10);
 
     last_time_ = this->now();

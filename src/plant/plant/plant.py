@@ -16,12 +16,16 @@ from ament_index_python.packages import get_package_share_directory
 import mujoco
 import mujoco.viewer
 from std_msgs.msg import Bool
+from sensor_msgs.msg import Imu
+from geometry_msgs.msg import TransformStamped
+from tf2_ros import StaticTransformBroadcaster
 
 from multirotor_interfaces.msg import Cmd, Input, MultirotorState
 
 # Simulation -------------------------------------------------------
 PHYSICS_HZ = 400.0
 PUB_HZ = 400.0
+IMU_HZ = 100.0
 HB_SERVO_TAU_SEC = 0.0
 
 # HummingBird ------------------------------------------------------
@@ -33,7 +37,7 @@ HB_N_ALPHA = 4
 HB_N_CTRL = HB_N_THRUST + 4 + HB_N_ALPHA
 
 # Sensor noise -----------------------------------------------------
-USE_NOISE = False
+USE_NOISE = True
 SIG_POS = 0.005
 SIG_VEL = 0.03
 SIG_GYRO = 0.01
@@ -225,6 +229,7 @@ class PlantRosNode(Node):
         if environment["frame"] != "controller_z_down":
             raise ValueError("environment frame must be controller_z_down")
         obstacles = expand_obstacles(environment["obstacles"])
+        self.publish_mapping_sensors = self.declare_parameter("publish_mapping_sensors", False).value
         spec = mujoco.MjSpec.from_file(xml_path)
         flip = np.diag([1.0, -1.0, -1.0])
         start_rpy = [environment["start"][axis] for axis in ("roll", "pitch", "yaw")]
@@ -239,7 +244,11 @@ class PlantRosNode(Node):
                 R_mj = flip @ rpy_to_rotmat(obstacle.get("rpy", [0.0, 0.0, 0.0])) @ flip
                 spec.worldbody.add_geom(name=obstacle["name"], type=mujoco.mjtGeom.mjGEOM_BOX,
                                         pos=center_mj, quat=rotmat_to_quat(R_mj), size=size, rgba=obstacle["rgba"],
+                                        material=obstacle.get("material", ""),
                                         contype=1, conaffinity=2, group=2)
+        if self.publish_mapping_sensors:
+            from plant.map_visuals import add_map_visuals
+            add_map_visuals(spec, obstacles)
         for name, color in (("start", [0.10, 0.85, 0.20, 0.75]),
                             ("goal", [0.10, 0.40, 1.00, 0.75])):
             spec.worldbody.add_geom(name=f"{name}_waypoint", type=mujoco.mjtGeom.mjGEOM_SPHERE,
@@ -364,6 +373,11 @@ class PlantRosNode(Node):
         self.sub_impulse_trigger = self.create_subscription(Bool, "/test/impulse_trigger", self.impulse_trigger_callback, 1)
         self.sub_moment_impulse_trigger = self.create_subscription(Bool, "/test/moment_impulse_trigger", self.moment_impulse_trigger_callback, 1)
         self.pub_state = self.create_publisher(MultirotorState, "/multirotor_state", 10)
+        if self.publish_mapping_sensors:
+            self.pub_imu = self.create_publisher(Imu, "/imu/data", 20)
+            self.static_tf = StaticTransformBroadcaster(self)
+            self.publish_camera_tf()
+            self.imu_timer = self.create_timer(1.0 / IMU_HZ, self.publish_imu)
         self.viewer_thread = threading.Thread(target=self.viewer_loop)
         self.sim_thread = threading.Thread(target=self.sim_loop, daemon=True)
 
@@ -372,6 +386,43 @@ class PlantRosNode(Node):
 
         self.get_logger().info("state convention: z-down, [x, y, z] = [x_mj, -y_mj, -z_mj]")
         self.get_logger().info("input order: f[4], beta[2] expanded to ctrl[4:8], alpha[4] -> ctrl[0:4], ctrl[4:8], ctrl[8:12]")
+
+    def publish_camera_tf(self):
+        # MuJoCo camera looks along local -Z; ROS optical frame uses +Z forward, +X right, +Y down.
+        R = np.array([[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]])
+        q = rotmat_to_quat(R)
+        tf = TransformStamped()
+        tf.header.stamp = self.get_clock().now().to_msg()
+        tf.header.frame_id = "base_link"
+        tf.child_frame_id = "camera_optical_frame"
+        tf.transform.translation.x = 0.195
+        tf.transform.translation.z = 0.02
+        tf.transform.rotation.x = float(q[1])
+        tf.transform.rotation.y = float(q[2])
+        tf.transform.rotation.z = float(q[3])
+        tf.transform.rotation.w = float(q[0])
+        self.static_tf.sendTransform(tf)
+
+    def publish_imu(self):
+        with self.lock:
+            q_imu = self.data.sensordata[self.s_adr[self.sid_imu_quat]:self.s_adr[self.sid_imu_quat] + 4].copy()
+            gyro_imu = self.data.sensordata[self.s_adr[self.sid_imu_gyro]:self.s_adr[self.sid_imu_gyro] + 3].copy()
+            acc_imu = self.data.sensordata[self.s_adr[self.sid_imu_acc]:self.s_adr[self.sid_imu_acc] + 3].copy()
+        # The MuJoCo IMU site is rotated 180 deg around body X.
+        R_body_world = quat_to_rotmat(q_imu) @ np.diag([1.0, -1.0, -1.0])
+        q = rotmat_to_quat(R_body_world)
+        gyro = to_zdown(gyro_imu)
+        acc = to_zdown(acc_imu)
+        msg = Imu()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "base_link"
+        msg.orientation.w, msg.orientation.x, msg.orientation.y, msg.orientation.z = map(float, q)
+        msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = map(float, gyro)
+        msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = map(float, acc)
+        msg.orientation_covariance = [0.001, 0.0, 0.0, 0.0, 0.001, 0.0, 0.0, 0.0, 0.001]
+        msg.angular_velocity_covariance = [0.0001, 0.0, 0.0, 0.0, 0.0001, 0.0, 0.0, 0.0, 0.0001]
+        msg.linear_acceleration_covariance = [0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01]
+        self.pub_imu.publish(msg)
 
     def set_hb_servo_offset(self):
         if HB_SERVO_OFFSET_DEG.shape != (6,):
