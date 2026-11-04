@@ -4,39 +4,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
-#include <utility>
 #include <params.hpp>
 
 namespace utils {
 
 // struct.zip =======================================================
-struct LPF {
-  double y = 0.0;
-  double alpha = 1.0;
-  bool initialized = false;
-
-  explicit LPF(double alpha_in = 1.0) : alpha(alpha_in) {}
-
-  double update(double x)
-  {
-    if (!initialized) {
-      y = x;
-      initialized = true;
-      return y;
-    }
-
-    y = alpha * x + (1.0 - alpha) * y;
-    return y;
-  }
-
-  void reset(double x = 0.0)
-  {
-    y = x;
-    initialized = false;
-  }
-};
-
 struct TargetCMD {
   double x = 0.0;
   double y = 0.0;
@@ -60,17 +32,6 @@ struct AllocationOutput {
 
   Eigen::Matrix<double, 6, 1> wrench_cmd = Eigen::Matrix<double, 6, 1>::Zero();
   Eigen::Matrix<double, 6, 1> wrench_alloc = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::Matrix<double, 6, 1> wrench_real = Eigen::Matrix<double, 6, 1>::Zero();
-
-  Eigen::Matrix<double, 6, 1> w_dot_des = Eigen::Matrix<double, 6, 1>::Zero();
-  Eigen::Matrix<double, 6, 1> w_dot_q = Eigen::Matrix<double, 6, 1>::Zero();
-
-  Eigen::Matrix<double, 10, 1> q_dot_primary = Eigen::Matrix<double, 10, 1>::Zero();
-  Eigen::Matrix<double, 10, 1> q_dot_nullspace = Eigen::Matrix<double, 10, 1>::Zero();
-  Eigen::Matrix<double, 10, 1> q_dot_final = Eigen::Matrix<double, 10, 1>::Zero();
-
-  double primary_scale = 1.0;
-  double nullspace_scale = 1.0;
 };
 
 
@@ -173,60 +134,6 @@ inline Eigen::Vector3d rotToRpy(const Eigen::Matrix3d& R)
   return rpy;
 }
 
-inline Eigen::Vector4d sigmaToQuat(const Eigen::Vector3d& sigma)
-{
-  // Liu et al. (2024), Eq. (26): stereographic map with the north pole excluded.
-  const double d = 1.0 + sigma.squaredNorm();
-  Eigen::Vector4d q;
-  q << (sigma.squaredNorm() - 1.0) / d, 2.0 * sigma / d;
-  return q;
-}
-
-inline Eigen::Vector3d rpyToSigma(const Eigen::Vector3d& rpy)
-{
-  Eigen::Quaterniond q(utils::rpyToRot(rpy));
-  if (q.w() > 0.0) q.coeffs() *= -1.0;
-  return q.vec() / std::max(1.0 - q.w(), 1.0e-8);
-}
-
-inline Eigen::Vector3d sigmaToBodyOmega(const Eigen::Vector3d& sigma, const Eigen::Vector3d& sigma_dot)
-{
-  const double d = 1.0 + sigma.squaredNorm();
-  const double sd = sigma.dot(sigma_dot);
-  const Eigen::Vector4d q = sigmaToQuat(sigma);
-  Eigen::Vector4d q_dot;
-  q_dot << 4.0 * sd / (d * d), 2.0 * sigma_dot / d - 4.0 * sd * sigma / (d * d);
-  const Eigen::Quaterniond Q(q(0), q(1), q(2), q(3));
-  const Eigen::Quaterniond Qdot(q_dot(0), q_dot(1), q_dot(2), q_dot(3));
-  return 2.0 * (Q.conjugate() * Qdot).vec();
-}
-
-inline Eigen::Vector3d sigmaToBodyOmegaDot(const Eigen::Vector3d& sigma, const Eigen::Vector3d& sigma_dot, const Eigen::Vector3d& sigma_ddot)
-{
-  const double d = 1.0 + sigma.squaredNorm();
-  const double sd = sigma.dot(sigma_dot);
-  const double sdd = sigma_dot.squaredNorm() + sigma.dot(sigma_ddot);
-  const Eigen::Vector4d q = sigmaToQuat(sigma);
-  Eigen::Vector4d q_ddot;
-  q_ddot(0) = 4.0 * sdd / (d * d) - 16.0 * sd * sd / (d * d * d);
-  q_ddot.tail<3>() = 2.0 * sigma_ddot / d - 8.0 * sd * sigma_dot / (d * d)
-    - 4.0 * sdd * sigma / (d * d) + 16.0 * sd * sd * sigma / (d * d * d);
-  const Eigen::Quaterniond Q(q(0), q(1), q(2), q(3));
-  const Eigen::Quaterniond Qddot(q_ddot(0), q_ddot(1), q_ddot(2), q_ddot(3));
-  return 2.0 * (Q.conjugate() * Qddot).vec();
-}
-
-inline std::array<Eigen::Vector3d, 8> boxVertices(const Eigen::Vector3d& half_size)
-{
-  std::array<Eigen::Vector3d, 8> v;
-  for (int i = 0; i < 8; ++i) {
-    v[i] << (i & 1 ? 1.0 : -1.0) * half_size(0),
-            (i & 2 ? 1.0 : -1.0) * half_size(1),
-            (i & 4 ? 1.0 : -1.0) * half_size(2);
-  }
-  return v;
-}
-
 inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
 {
   Eigen::Vector3d b1 = heading;
@@ -249,76 +156,6 @@ inline Eigen::Matrix3d headingToRot(const Eigen::Vector3d& heading)
   R.col(2) = b3;
 
   return R;
-}
-
-inline bool orientedBoxesOverlap(const Eigen::Vector3d& p, const Eigen::Matrix3d& R, const Eigen::Vector3d& half_size, const Eigen::Vector3d& box_center, const Eigen::Matrix3d& box_R, const Eigen::Vector3d& box_half_size)
-{
-  for (const auto& v : boxVertices(half_size))
-  {
-    const Eigen::Vector3d local = box_R.transpose() * (p + R * v - box_center);
-    if ((local.array().abs() < box_half_size.array()).all()) return true;
-  }
-  // OBB versus OBB separating axes: 3 body, 3 obstacle, and 9 cross products.
-  const Eigen::Matrix3d C = R.transpose() * box_R;
-  const Eigen::Matrix3d absC = C.cwiseAbs().array() + 1.0e-9;
-  const Eigen::Vector3d t = R.transpose() * (p - box_center);
-  bool separated = false;
-  for (int i = 0; i < 3; ++i)
-  {
-    if (std::abs(t(i)) > half_size(i) + absC.row(i).dot(box_half_size)) separated = true;
-  }
-  for (int j = 0; j < 3; ++j)
-  {
-    const double box_axis = std::abs(box_R.col(j).dot(p - box_center));
-    if (box_axis > box_half_size(j) + absC.col(j).dot(half_size)) separated = true;
-  }
-  for (int i = 0; i < 3; ++i) for (int j = 0; j < 3; ++j)
-  {
-    const int i1 = (i + 1) % 3, i2 = (i + 2) % 3;
-    const int j1 = (j + 1) % 3, j2 = (j + 2) % 3;
-    const double body_radius = half_size(i1) * absC(i2, j) + half_size(i2) * absC(i1, j);
-    const double box_radius = box_half_size(j1) * absC(i, j2) + box_half_size(j2) * absC(i, j1);
-    if (std::abs(t(i2) * C(i1, j) - t(i1) * C(i2, j)) > body_radius + box_radius) separated = true;
-  }
-  return !separated;
-}
-
-inline std::pair<double, Eigen::Vector3d> nearestBoxPointInEllipsoid( const Eigen::Vector3d& box_center, const Eigen::Vector3d& box_half_size, const Eigen::Matrix3d& box_R, const Eigen::Vector3d& center, const Eigen::Matrix3d& Q)
-{
-  const Eigen::Vector3d lower = -box_half_size;
-  const Eigen::Vector3d upper = box_half_size;
-  const Eigen::Vector3d local_center = box_R.transpose() * (center - box_center);
-  const Eigen::Matrix3d local_Q = box_R.transpose() * Q * box_R;
-  double best = std::numeric_limits<double>::infinity();
-  Eigen::Vector3d best_x = Eigen::Vector3d::Zero();
-  for (int code = 0; code < 27; ++code) {
-    Eigen::Vector3d x = local_center;
-    std::array<int, 3> free{};
-    int state = code, nfree = 0;
-    for (int axis = 0; axis < 3; ++axis) {
-      const int side = state % 3;
-      state /= 3;
-      if (side == 0) x(axis) = lower(axis);
-      else if (side == 1) x(axis) = upper(axis);
-      else free[nfree++] = axis;
-    }
-    if (nfree > 0) {
-      Eigen::MatrixXd H(nfree, nfree);
-      Eigen::VectorXd rhs(nfree);
-      for (int row = 0; row < nfree; ++row) {
-        rhs(row) = 0.0;
-        for (int axis = 0; axis < 3; ++axis) rhs(row) -= local_Q(free[row], axis) * (x(axis) - local_center(axis));
-        for (int col = 0; col < nfree; ++col) H(row, col) = local_Q(free[row], free[col]);
-      }
-      const Eigen::VectorXd dx = H.ldlt().solve(rhs);
-      for (int row = 0; row < nfree; ++row) x(free[row]) += dx(row);
-    }
-    if ((x.array() < lower.array() - 1.0e-9).any()
-        || (x.array() > upper.array() + 1.0e-9).any()) continue;
-    const double distance = (x - local_center).dot(local_Q * (x - local_center));
-    if (distance < best) { best = distance; best_x = box_center + box_R * x; }
-  }
-  return std::pair<double, Eigen::Vector3d>(best, best_x);
 }
 
 inline Eigen::Matrix<double, 6, 1> evaluateA4B2Wrench(const Eigen::Vector4d& f, const Eigen::Vector2d& beta, const Eigen::Vector4d& alpha)
@@ -349,83 +186,53 @@ inline Eigen::Matrix<double, 6, 1> evaluateA4B2Wrench(const Eigen::Vector4d& f, 
 }
 
 // Path utils =========================================================
-inline TargetCMD mapCHK(double t)
-{
-  static constexpr double HOLD_SEC = 3.0;
-  static constexpr double TRAVEL_SEC = 24.0;
-  static constexpr double DIST_M = 6.0;
-
-  TargetCMD cmd;
-  cmd.z = 1.0;  // altitude-up command; position_cmd converts it to controller z-down
-  const double u = std::clamp((t - HOLD_SEC) / TRAVEL_SEC, 0.0, 1.0);
-  const double s = u * u * u * (10.0 + u * (-15.0 + 6.0 * u));
-  cmd.x = DIST_M * s;
-  if (t > HOLD_SEC && t < HOLD_SEC + TRAVEL_SEC) {
-    cmd.vel.x() = DIST_M * 30.0 * u * u * (1.0 - u) * (1.0 - u) / TRAVEL_SEC;
-    cmd.acc.x() = DIST_M * 60.0 * u * (1.0 - u) * (1.0 - 2.0 * u) / (TRAVEL_SEC * TRAVEL_SEC);
-  }
-  return cmd;
-}
-
 inline TargetCMD posPath(double t)
 {
-  static constexpr double HOVER_SEC = 3.0;
-  static constexpr double SEG_SEC = 3.0;
+  static constexpr bool TWO_POINT = false;
+
+  static constexpr double SEG_SEC = 2.0;
+  static constexpr double HOLD_SEC = 3.0;
   static constexpr double XY = 1.0;
-  static constexpr double Z = 1.0;
 
   TargetCMD cmd;
 
-  if (t < HOVER_SEC) {
-    const double a = t / HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
+  const double CYCLE_SEC = SEG_SEC + HOLD_SEC;
+  const int phase = static_cast<int>(std::floor(t / CYCLE_SEC)) % (TWO_POINT ? 2 : 4);
+  const double local_t = std::fmod(t, CYCLE_SEC);
 
-    cmd.x = 0.0;
-    cmd.y = 0.0;
-    cmd.z = Z * s;
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.0;
-
-    return cmd;
-  }
-
-  const auto smooth = [](double a) {
-    a = std::clamp(a, 0.0, 1.0);
-    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
+  const std::array<Eigen::Vector2d, 4> corners =
+  {
+    Eigen::Vector2d{XY, 0.0},
+    Eigen::Vector2d{XY, XY},
+    Eigen::Vector2d{0.0, XY},
+    Eigen::Vector2d{0.0, 0.0}
   };
 
-  const double corners[4][2] = {
-    { XY,  XY},
-    {-XY,  XY},
-    {-XY, -XY},
-    { XY, -XY},
-  };
+  Eigen::Vector2d p0;
+  Eigen::Vector2d p1;
 
-  const double tm = t - HOVER_SEC;
-  double x0 = 0.0;
-  double y0 = 0.0;
-  double x1 = corners[0][0];
-  double y1 = corners[0][1];
-  double seg_t = tm;
-
-  if (tm >= SEG_SEC) {
-    const double loop_t = tm - SEG_SEC;
-    const int phase = static_cast<int>(std::floor(loop_t / SEG_SEC)) % 4;
-    const int next_phase = (phase + 1) % 4;
-
-    x0 = corners[phase][0];
-    y0 = corners[phase][1];
-    x1 = corners[next_phase][0];
-    y1 = corners[next_phase][1];
-    seg_t = std::fmod(loop_t, SEG_SEC);
+  if (TWO_POINT)
+  {
+    p0 = (phase == 0) ? Eigen::Vector2d{0.0, 0.0} : Eigen::Vector2d{XY, 0.0};
+    p1 = (phase == 0) ? Eigen::Vector2d{XY, 0.0} : Eigen::Vector2d{0.0, 0.0};
+  }
+  else
+  {
+    p0 = (phase == 0) ? Eigen::Vector2d{0.0, 0.0} : corners[phase - 1];
+    p1 = corners[phase];
   }
 
-  const double s = smooth(seg_t / SEG_SEC);
+  double s = 1.0;
 
-  cmd.x = x0 + (x1 - x0) * s;
-  cmd.y = y0 + (y1 - y0) * s;
-  cmd.z = Z;
+  if (local_t < SEG_SEC)
+  {
+    const double a = local_t / SEG_SEC;
+    s = a * a * (3.0 - 2.0 * a);
+  }
+
+  cmd.x = p0(0) + (p1(0) - p0(0)) * s;
+  cmd.y = p0(1) + (p1(1) - p0(1)) * s;
+  cmd.z = 0.0;
   cmd.roll = 0.0;
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
@@ -435,163 +242,40 @@ inline TargetCMD posPath(double t)
 
 inline TargetCMD attPath(double t)
 {
-  static constexpr double HOVER_SEC = 3.0;
   static constexpr double TUNE_SEC = 40.0;
-  static constexpr double Z = 1.0;
-  static constexpr double ROLL_AMP = 20.0 * M_PI / 180.0;
-  static constexpr double PITCH_AMP = 80.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
-  if (t < HOVER_SEC) {
-    const double a = t / HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = 0.0;
-    cmd.y = 0.0;
-    cmd.z = Z * s;
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.0;
-
-    return cmd;
-  }
-
-  const double tm = std::fmod(t - HOVER_SEC, 3.0 * TUNE_SEC);
-  const double axis_t = std::fmod(tm, TUNE_SEC);
+  const double tm = std::fmod(t, TUNE_SEC);
+  const double axis_t = tm;
   const double w = 2.0 * M_PI / TUNE_SEC;
 
   cmd.x = 0.0;
   cmd.y = 0.0;
-  cmd.z = Z;
+  cmd.z = 0.0;
   cmd.roll = 0.0;
-  cmd.pitch = 0.0;
+  cmd.pitch = params::PITCH_MAX * std::sin(w * axis_t);
   cmd.yaw = 0.0;
-
-  if (tm < TUNE_SEC) {
-    cmd.pitch = PITCH_AMP * std::sin(w * axis_t);
-  } else if (tm < 2.0 * TUNE_SEC) {
-    cmd.roll = ROLL_AMP * std::sin(w * axis_t);
-  }
 
   return cmd;
 }
 
 inline TargetCMD stepAttPath(double t)
 {
-  static constexpr double HOVER_SEC = 2.0;
   static constexpr double ZERO_HOLD_SEC = 2.0;
-  static constexpr double RAMP_SEC = 1.0;
-  static constexpr double HOLD_SEC = 3.0;
-  static constexpr double Z = 1.0;
+  static constexpr double RAMP_SEC = 3.0;
+  static constexpr double HOLD_SEC = 5.0;
 
-  static constexpr double SWITCH_DEG = 80.0;
-  static constexpr double FIRST_STEP_DEG = 40.0;
-  static constexpr double SECOND_STEP_DEG = 10.0;
-  static constexpr double MAX_DEG = 89.0;
+  static constexpr double SWITCH_DEG = 60.0;
+  static constexpr double FIRST_STEP_DEG = 5.0;
+  static constexpr double SECOND_STEP_DEG = 1.0;
+  static constexpr double MAX_DEG = 60.0;
   static constexpr double DEG2RAD = M_PI / 180.0;
 
-  static constexpr int FIRST_STAGE_COUNT =
-      static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
+  static constexpr int FIRST_STAGE_COUNT = static_cast<int>(SWITCH_DEG / FIRST_STEP_DEG);
 
   TargetCMD cmd;
 
-  cmd.x = 0.0;
-  cmd.y = 0.0;
-  cmd.z = Z;
-  cmd.roll = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw = 0.0;
-
-  if (t < HOVER_SEC) {
-    const double a = t / HOVER_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.z = Z * s;
-
-    return cmd;
-  }
-
-  const double tm = t - HOVER_SEC;
-
-  if (tm < ZERO_HOLD_SEC) {
-    return cmd;
-  }
-
-  const double ts = tm - ZERO_HOLD_SEC;
-  const double stage_sec = RAMP_SEC + HOLD_SEC;
-  const int stage = static_cast<int>(std::floor(ts / stage_sec));
-  const double stage_t = std::fmod(ts, stage_sec);
-
-  double start_deg;
-  double target_deg;
-
-  if (stage < FIRST_STAGE_COUNT) {
-    start_deg = stage * FIRST_STEP_DEG;
-    target_deg = start_deg + FIRST_STEP_DEG;
-  }
-  else {
-    const int second_stage = stage - FIRST_STAGE_COUNT;
-
-    start_deg =
-        SWITCH_DEG + second_stage * SECOND_STEP_DEG;
-
-    target_deg =
-        start_deg + SECOND_STEP_DEG;
-  }
-
-  start_deg = std::min(start_deg, MAX_DEG);
-  target_deg = std::min(target_deg, MAX_DEG);
-
-  const double start_angle = start_deg * DEG2RAD;
-  const double target_angle = target_deg * DEG2RAD;
-
-  if (start_deg >= MAX_DEG) {
-    cmd.pitch = MAX_DEG * DEG2RAD;
-    return cmd;
-  }
-
-  if (stage_t < RAMP_SEC) {
-    const double a = stage_t / RAMP_SEC;
-    const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.pitch =
-        start_angle + (target_angle - start_angle) * s;
-  }
-  else {
-    cmd.pitch = target_angle;
-  }
-
-  return cmd;
-}
-
-inline TargetCMD throughWallPath(double t)
-{
-  static constexpr double TAKEOFF_SEC = 1.0;
-  static constexpr double STRAIGHT_SEC = 3.0;
-  static constexpr double TILT_SEC = 3.0;
-  static constexpr double DIAG_SEC = 3.0;
-  static constexpr double EXIT_SEC = 2.0;
-
-  static constexpr double Z0 = 1.0;
-  static constexpr double X_TURN = 1.5;
-  static constexpr double X_DIAG_END = 3.0;
-  static constexpr double Z_DIAG_END = 2.5;
-  static constexpr double X_END = 4.0;
-
-  static constexpr double PITCH_45 = M_PI / 4.0;
-
-  static constexpr double ONE_WAY_SEC =
-      STRAIGHT_SEC + TILT_SEC + DIAG_SEC + TILT_SEC + EXIT_SEC;
-
-  static constexpr double CYCLE_SEC = 2.0 * ONE_WAY_SEC;
-
-  const auto smooth = [](double a) {
-    a = std::clamp(a, 0.0, 1.0);
-    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
-  };
-
-  TargetCMD cmd;
   cmd.x = 0.0;
   cmd.y = 0.0;
   cmd.z = 0.0;
@@ -599,225 +283,125 @@ inline TargetCMD throughWallPath(double t)
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  // Initial takeoff only once
-  if (t < TAKEOFF_SEC) {
-    const double s = smooth(t / TAKEOFF_SEC);
-    cmd.z = Z0 * s;
-    return cmd;
+  const double stage_sec = RAMP_SEC + HOLD_SEC;
+  const int UP_STAGE_COUNT = FIRST_STAGE_COUNT + static_cast<int>((MAX_DEG - SWITCH_DEG) / SECOND_STEP_DEG);
+  const double cycle_sec = ZERO_HOLD_SEC + 2.0 * UP_STAGE_COUNT * stage_sec + ZERO_HOLD_SEC;
+  const double cycle_t = std::fmod(t, cycle_sec);
+
+  if (cycle_t < ZERO_HOLD_SEC) return cmd;
+
+  const double ts = cycle_t - ZERO_HOLD_SEC;
+  if (ts >= 2.0 * UP_STAGE_COUNT * stage_sec) return cmd;
+
+  const int raw_stage = static_cast<int>(std::floor(ts / stage_sec));
+  const double stage_t = std::fmod(ts, stage_sec);
+  const bool down = raw_stage >= UP_STAGE_COUNT;
+  const int stage = down ? 2 * UP_STAGE_COUNT - raw_stage - 1 : raw_stage;
+
+  double start_deg;
+  double target_deg;
+
+  if (stage < FIRST_STAGE_COUNT)
+  {
+    start_deg = stage * FIRST_STEP_DEG;
+    target_deg = start_deg + FIRST_STEP_DEG;
+  }
+  else
+  {
+    const int second_stage = stage - FIRST_STAGE_COUNT;
+
+    start_deg = SWITCH_DEG + second_stage * SECOND_STEP_DEG;
+    target_deg = start_deg + SECOND_STEP_DEG;
   }
 
-  // Repeat 0 -> 4 -> 0
-  double tm = std::fmod(t - TAKEOFF_SEC, CYCLE_SEC);
+  start_deg = std::min(start_deg, MAX_DEG);
+  target_deg = std::min(target_deg, MAX_DEG);
 
-  // =========================================================
-  // Forward : x = 0 -> 4
-  // =========================================================
-  if (tm < ONE_WAY_SEC) {
+  if (down) std::swap(start_deg, target_deg);
 
-    if (tm < STRAIGHT_SEC) {
-      const double s = smooth(tm / STRAIGHT_SEC);
-      cmd.x = X_TURN * s;
-      cmd.z = Z0;
-      return cmd;
-    }
+  const double start_angle = start_deg * DEG2RAD;
+  const double target_angle = target_deg * DEG2RAD;
 
-    tm -= STRAIGHT_SEC;
+  if (stage_t < RAMP_SEC)
+  {
+    const double a = stage_t / RAMP_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
 
-    if (tm < TILT_SEC) {
-      const double s = smooth(tm / TILT_SEC);
-      cmd.x = X_TURN;
-      cmd.z = Z0;
-      cmd.pitch = PITCH_45 * s;
-      return cmd;
-    }
-
-    tm -= TILT_SEC;
-
-    if (tm < DIAG_SEC) {
-      const double s = smooth(tm / DIAG_SEC);
-      cmd.x = X_TURN + (X_DIAG_END - X_TURN) * s;
-      cmd.z = Z0 + (Z_DIAG_END - Z0) * s;
-      cmd.pitch = PITCH_45;
-      return cmd;
-    }
-
-    tm -= DIAG_SEC;
-
-    if (tm < TILT_SEC) {
-      const double s = smooth(tm / TILT_SEC);
-      cmd.x = X_DIAG_END;
-      cmd.z = Z_DIAG_END;
-      cmd.pitch = PITCH_45 * (1.0 - s);
-      return cmd;
-    }
-
-    tm -= TILT_SEC;
-
-    const double s = smooth(tm / EXIT_SEC);
-    cmd.x = X_DIAG_END + (X_END - X_DIAG_END) * s;
-    cmd.z = Z_DIAG_END;
-    return cmd;
+    cmd.pitch = start_angle + (target_angle - start_angle) * s;
   }
-
-  // =========================================================
-  // Return : x = 4 -> 0
-  // =========================================================
-  tm -= ONE_WAY_SEC;
-
-  // 4.0 -> 3.0
-  if (tm < EXIT_SEC) {
-    const double s = smooth(tm / EXIT_SEC);
-    cmd.x = X_END + (X_DIAG_END - X_END) * s;
-    cmd.z = Z_DIAG_END;
-    return cmd;
-  }
-
-  tm -= EXIT_SEC;
-
-  // At x = 3.0, tilt 0 -> 45 deg
-  if (tm < TILT_SEC) {
-    const double s = smooth(tm / TILT_SEC);
-    cmd.x = X_DIAG_END;
-    cmd.z = Z_DIAG_END;
-    cmd.pitch = PITCH_45 * s;
-    return cmd;
-  }
-
-  tm -= TILT_SEC;
-
-  // Diagonal backward
-  if (tm < DIAG_SEC) {
-    const double s = smooth(tm / DIAG_SEC);
-    cmd.x = X_DIAG_END + (X_TURN - X_DIAG_END) * s;
-    cmd.z = Z_DIAG_END + (Z0 - Z_DIAG_END) * s;
-    cmd.pitch = PITCH_45;
-    return cmd;
-  }
-
-  tm -= DIAG_SEC;
-
-  // At x = 1.5, tilt 45 -> 0 deg
-  if (tm < TILT_SEC) {
-    const double s = smooth(tm / TILT_SEC);
-    cmd.x = X_TURN;
-    cmd.z = Z0;
-    cmd.pitch = PITCH_45 * (1.0 - s);
-    return cmd;
-  }
-
-  tm -= TILT_SEC;
-
-  // 1.5 -> 0.0
-  const double s = smooth(tm / STRAIGHT_SEC);
-  cmd.x = X_TURN * (1.0 - s);
-  cmd.z = Z0;
+  else cmd.pitch = target_angle;
 
   return cmd;
 }
 
-inline TargetCMD circularWallPath(double t)
+inline TargetCMD circle_demo(double t)
 {
-  static constexpr double R = 2.5;
-  static constexpr double Z = 1.2;
-
-  static constexpr double ORIENT_SEC = 2.0;
-  static constexpr double RAMP_SEC = 3.0;
-  static constexpr double LAP_SEC = 14.0;
-
-  static constexpr double OMEGA = 2.0 * M_PI / LAP_SEC;
-
-  const auto smooth = [](double a) {
-    a = std::clamp(a, 0.0, 1.0);
-    return a * a * a * (a * (a * 6.0 - 15.0) + 10.0);
-  };
+  static constexpr double HOVER_SEC = 3.0;
+  static constexpr double PERIOD = 30.0;
+  static constexpr double RADIUS = 0.5;
+  static constexpr double PITCH_AMP = 0.0 * M_PI / 180.0;
 
   TargetCMD cmd;
 
+  if (t < HOVER_SEC) {
+    cmd.x = 0.0;
+    cmd.y = 0.0;
+    cmd.z = 0.0;
+    cmd.roll = 0.0;
+    cmd.pitch = 0.0;
+    cmd.yaw = 0.0;
+
+    return cmd;
+  }
+
+  const double tm = t - HOVER_SEC;
+  const double w = 2.0 * M_PI / PERIOD;
+
+  cmd.x = RADIUS * (std::cos(w * tm) - 1.0);
+  cmd.y = RADIUS * std::sin(w * tm);
+  cmd.z = 0.0;
+
+  cmd.roll = 0.0;
+  cmd.pitch = PITCH_AMP * std::sin(w * tm);
+  cmd.yaw = 0.0;
+
+  return cmd;
+}
+
+inline TargetCMD demo_straight(double t)
+{
+  static constexpr double MOVE_SEC = 1.0;
+  static constexpr double HOLD_SEC = 5.0;
+  static constexpr double DIST = 1.0;
+  static constexpr double PERIOD = 2.0 * (MOVE_SEC + HOLD_SEC);
+
+  TargetCMD cmd;
+
+  const double tm = std::fmod(std::max(0.0, t), PERIOD);
+
   cmd.x = 0.0;
   cmd.y = 0.0;
-  cmd.z = Z;
-
+  cmd.z = 0.0;
   cmd.roll = 0.0;
   cmd.pitch = 0.0;
   cmd.yaw = 0.0;
 
-  if (t < ORIENT_SEC) {
-    const double s = smooth(t / ORIENT_SEC);
-
-    cmd.x = 0.0;
+  if (tm < HOLD_SEC) {
     cmd.y = 0.0;
-    cmd.z = Z;
-
-    cmd.roll = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw = 0.5 * M_PI * s;
-
-    return cmd;
   }
-
-  t -= ORIENT_SEC;
-
-  double phase = 0.0;
-  if (t < RAMP_SEC) {
-    const double u = std::clamp(t / RAMP_SEC, 0.0, 1.0);
-    const double phase_integral =
-        2.5 * std::pow(u, 4)
-      - 3.0 * std::pow(u, 5)
-      +       std::pow(u, 6);
-
-    phase = OMEGA * RAMP_SEC * phase_integral;
+  else if (tm < HOLD_SEC + MOVE_SEC) {
+    const double a = (tm - HOLD_SEC) / MOVE_SEC;
+    const double s = a * a * (3.0 - 2.0 * a);
+    cmd.y = DIST * s;
+  }
+  else if (tm < 2.0 * HOLD_SEC + MOVE_SEC) {
+    cmd.y = DIST;
   }
   else {
-    phase = OMEGA * (t - 0.5 * RAMP_SEC);
-  }
-
-  cmd.x = R * (1.0 - std::cos(phase));
-  cmd.y = R * std::sin(phase);
-  cmd.z = Z;
-
-  // Tangential heading
-  const double yaw = 0.5 * M_PI - phase;
-
-  cmd.roll = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw = std::atan2(std::sin(yaw), std::cos(yaw));
-
-  return cmd;
-}
-
-inline TargetCMD stepPath(double t)
-{
-  static constexpr double HOVER_SEC = 3.0;
-  static constexpr double HOLD_SEC  = 3.0;
-
-  static constexpr double X_delta = 0.0;
-  static constexpr double Z = 1.0;
-
-  TargetCMD cmd;
-
-  if (t < HOVER_SEC) 
-  {
-    const double a = t / HOVER_SEC;
+    const double a = (tm - 2.0 * HOLD_SEC - MOVE_SEC) / MOVE_SEC;
     const double s = a * a * (3.0 - 2.0 * a);
-
-    cmd.x = 0.0;
-    cmd.y = 0.0;
-    cmd.z = Z * s;
-
-    cmd.roll  = 0.0;
-    cmd.pitch = 0.0;
-    cmd.yaw   = 0.0;
-
-    return cmd;
+    cmd.y = DIST * (1.0 - s);
   }
-
-  cmd.x = t - HOVER_SEC < HOLD_SEC ? X_delta : 0.0;
-  cmd.y = 0.0;
-  cmd.z = Z;
-
-  cmd.roll  = 0.0;
-  cmd.pitch = 0.0;
-  cmd.yaw   = 0.0;
 
   return cmd;
 }
@@ -875,194 +459,5 @@ inline AllocationOutput allocation_a1b1(const Eigen::Vector3d& moment_cmd, const
   return out;
 }
 
-inline AllocationOutput allocation_a4b2(const Eigen::Vector3d& moment_cmd, const Eigen::Vector3d& force_cmd, const Eigen::Vector4d& alpha_measured, const Eigen::Vector2d& beta_measured, bool servo_read, double dt)
-{
-  using Vector6d = Eigen::Matrix<double, 6, 1>;
-  using Vector10d = Eigen::Matrix<double, 10, 1>;
-  using Matrix66d = Eigen::Matrix<double, 6, 6>;
-  using Matrix610d = Eigen::Matrix<double, 6, 10>;
-  using Matrix106d = Eigen::Matrix<double, 10, 6>;
-  using Matrix1010d = Eigen::Matrix<double, 10, 10>;
-
-  static bool initialized = false;
-  static AllocationOutput previous_cmd;
-
-  if (!initialized)
-  {
-    previous_cmd.alpha = alpha_measured;
-    previous_cmd.beta.setZero();
-    previous_cmd.f.setConstant(std::clamp(0.25 * force_cmd.norm(), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX));
-    initialized = true;
-  }
-
-  // q = [alpha1 alpha2 alpha3 alpha4 beta1 beta2 f1 f2 f3 f4]^T
-  Vector10d q;
-  q.segment<4>(0) = servo_read ? alpha_measured : previous_cmd.alpha;
-  q.segment<2>(4) = servo_read ? beta_measured : previous_cmd.beta;
-  q.segment<4>(6) = previous_cmd.f;
-
-  const double alpha1 = q(0);
-  const double alpha2 = q(1);
-  const double alpha3 = q(2);
-  const double alpha4 = q(3);
-  const double beta1 = q(4);
-  const double beta2 = q(5);
-  const double f1 = q(6);
-  const double f2 = q(7);
-  const double f3 = q(8);
-  const double f4 = q(9);
-
-  const Eigen::Vector3d r1(params::HB_L, params::HB_L, 0.0);
-  const Eigen::Vector3d r2(-params::HB_L, params::HB_L, 0.0);
-  const Eigen::Vector3d r3(-params::HB_L, -params::HB_L, 0.0);
-  const Eigen::Vector3d r4(params::HB_L, -params::HB_L, 0.0);
-
-  const Eigen::Vector3d e1(-std::sin(beta1) * std::cos(alpha1), std::sin(alpha1), -std::cos(beta1) * std::cos(alpha1));
-  const Eigen::Vector3d e2(-std::sin(beta2) * std::cos(alpha2), std::sin(alpha2), -std::cos(beta2) * std::cos(alpha2));
-  const Eigen::Vector3d e3(-std::sin(beta2) * std::cos(alpha3), std::sin(alpha3), -std::cos(beta2) * std::cos(alpha3));
-  const Eigen::Vector3d e4(-std::sin(beta1) * std::cos(alpha4), std::sin(alpha4), -std::cos(beta1) * std::cos(alpha4));
-
-  const Eigen::Vector3d de_dalpha1(std::sin(beta1) * std::sin(alpha1), std::cos(alpha1), std::cos(beta1) * std::sin(alpha1));
-  const Eigen::Vector3d de_dalpha2(std::sin(beta2) * std::sin(alpha2), std::cos(alpha2), std::cos(beta2) * std::sin(alpha2));
-  const Eigen::Vector3d de_dalpha3(std::sin(beta2) * std::sin(alpha3), std::cos(alpha3), std::cos(beta2) * std::sin(alpha3));
-  const Eigen::Vector3d de_dalpha4(std::sin(beta1) * std::sin(alpha4), std::cos(alpha4), std::cos(beta1) * std::sin(alpha4));
-
-  const Eigen::Vector3d de_dbeta1(-std::cos(beta1) * std::cos(alpha1), 0.0, std::sin(beta1) * std::cos(alpha1));
-  const Eigen::Vector3d de_dbeta2(-std::cos(beta2) * std::cos(alpha2), 0.0, std::sin(beta2) * std::cos(alpha2));
-  const Eigen::Vector3d de_dbeta3(-std::cos(beta2) * std::cos(alpha3), 0.0, std::sin(beta2) * std::cos(alpha3));
-  const Eigen::Vector3d de_dbeta4(-std::cos(beta1) * std::cos(alpha4), 0.0, std::sin(beta1) * std::cos(alpha4));
-
-  const Eigen::Vector3d m_e1 = r1.cross(e1) + params::HB_ZETA * e1;
-  const Eigen::Vector3d m_e2 = r2.cross(e2) - params::HB_ZETA * e2;
-  const Eigen::Vector3d m_e3 = r3.cross(e3) + params::HB_ZETA * e3;
-  const Eigen::Vector3d m_e4 = r4.cross(e4) - params::HB_ZETA * e4;
-
-  const Eigen::Vector3d m_alpha1 = r1.cross(de_dalpha1) + params::HB_ZETA * de_dalpha1;
-  const Eigen::Vector3d m_alpha2 = r2.cross(de_dalpha2) - params::HB_ZETA * de_dalpha2;
-  const Eigen::Vector3d m_alpha3 = r3.cross(de_dalpha3) + params::HB_ZETA * de_dalpha3;
-  const Eigen::Vector3d m_alpha4 = r4.cross(de_dalpha4) - params::HB_ZETA * de_dalpha4;
-
-  const Eigen::Vector3d m_beta1 = r1.cross(de_dbeta1) + params::HB_ZETA * de_dbeta1;
-  const Eigen::Vector3d m_beta2 = r2.cross(de_dbeta2) - params::HB_ZETA * de_dbeta2;
-  const Eigen::Vector3d m_beta3 = r3.cross(de_dbeta3) + params::HB_ZETA * de_dbeta3;
-  const Eigen::Vector3d m_beta4 = r4.cross(de_dbeta4) - params::HB_ZETA * de_dbeta4;
-
-  Vector6d W_now;
-  W_now.head<3>() = f1 * m_e1 + f2 * m_e2 + f3 * m_e3 + f4 * m_e4;
-  W_now.tail<3>() = f1 * e1 + f2 * e2 + f3 * e3 + f4 * e4;
-
-  Matrix610d J = Matrix610d::Zero();
-  J.col(0) << f1 * m_alpha1, f1 * de_dalpha1;
-  J.col(1) << f2 * m_alpha2, f2 * de_dalpha2;
-  J.col(2) << f3 * m_alpha3, f3 * de_dalpha3;
-  J.col(3) << f4 * m_alpha4, f4 * de_dalpha4;
-  J.col(4) << f1 * m_beta1 + f4 * m_beta4, f1 * de_dbeta1 + f4 * de_dbeta4;
-  J.col(5) << f2 * m_beta2 + f3 * m_beta3, f2 * de_dbeta2 + f3 * de_dbeta3;
-  J.col(6) << m_e1, e1;
-  J.col(7) << m_e2, e2;
-  J.col(8) << m_e3, e3;
-  J.col(9) << m_e4, e4;
-
-  Vector6d W_des;
-  W_des << moment_cmd, force_cmd;
-
-  // (7) W_dot_des = Kj (W_des - W(q))
-  const Vector6d W_dot_des = params::HB_KJ * (W_des - W_now);
-
-  const Matrix66d JWJ = J * params::HB_W_INV * J.transpose();
-  const Matrix66d JWJ_inv = JWJ.completeOrthogonalDecomposition().solve(Matrix66d::Identity());
-  const Matrix106d J_pesudo = params::HB_W_INV * J.transpose() * JWJ_inv;
-
-  Vector10d q_dot_star = Vector10d::Zero();
-  for (int i = 0; i < 4; ++i) q_dot_star(i)  = params::HB_NULL_K[0] * (0.0                    - q(i));
-  for (int i = 4; i < 6; ++i) q_dot_star(i)  = params::HB_NULL_K[1] * (0.0                    - q(i));
-  for (int i = 6; i < 10; ++i) q_dot_star(i) = params::HB_NULL_K[2] * (force_cmd.norm() / 4.0 - q(i));
-
-  // q_dot = J^# W_dot_des + (I - J^# J) q_dot_star
-  const Vector10d q_dot_primary = J_pesudo * W_dot_des;
-
-  const Vector10d q_dot_nullspace = (Matrix1010d::Identity() - J_pesudo * J) * q_dot_star;
-
-  Vector10d q_dot_max;
-  for (int i = 0; i < 4; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
-  for (int i = 4; i < 6; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
-  for (int i = 6; i < 10; ++i) q_dot_max(i) = params::HB_QDOT_MAX[i];
-
-  const auto nullspace_interval = [&](double primary_scale, double& lower, double& upper)
-  {
-    lower = 0.0;
-    upper = 1.0;
-
-    for (int i = 0; i < 10; ++i)
-    {
-      const double primary_rate = primary_scale * q_dot_primary(i);
-      if (std::abs(q_dot_nullspace(i)) < 1.0e-12)
-      {
-        if (std::abs(primary_rate) > q_dot_max(i) + 1.0e-12) return false;
-        continue;
-      }
-
-      double bound_1 = (-q_dot_max(i) - primary_rate) / q_dot_nullspace(i);
-      double bound_2 = ( q_dot_max(i) - primary_rate) / q_dot_nullspace(i);
-      if (bound_1 > bound_2) std::swap(bound_1, bound_2);
-
-      lower = std::max(lower, bound_1);
-      upper = std::min(upper, bound_2);
-      if (lower > upper + 1.0e-12) return false;
-    }
-
-    return true;
-  };
-
-  double primary_scale = 1.0;
-  double nullspace_lower = 0.0;
-  double nullspace_upper = 1.0;
-  if (!nullspace_interval(primary_scale, nullspace_lower, nullspace_upper))
-  {
-    double feasible_scale = 0.0;
-    double infeasible_scale = 1.0;
-    for (int iteration = 0; iteration < 40; ++iteration)
-    {
-      const double candidate = 0.5 * (feasible_scale + infeasible_scale);
-      double candidate_lower = 0.0;
-      double candidate_upper = 1.0;
-
-      if (nullspace_interval(candidate, candidate_lower, candidate_upper)) feasible_scale = candidate;
-      else infeasible_scale = candidate;
-    }
-
-    primary_scale = feasible_scale;
-    nullspace_interval(primary_scale, nullspace_lower, nullspace_upper);
-  }
-
-  const double nullspace_scale = std::clamp(nullspace_upper, 0.0, 1.0);
-  const Vector10d q_dot = primary_scale * q_dot_primary + nullspace_scale * q_dot_nullspace;
-
-  Vector10d q_cmd;
-  for (int i = 0; i < 6; ++i) q_cmd(i) = q(i) + params::HB_Q_CMD_TAU_SERVO * q_dot(i);
-  for (int i = 6; i < 10; ++i) q_cmd(i) = q(i) + std::max(dt, 1.0e-6) * q_dot(i);
-
-  AllocationOutput out;
-  for (int i = 0; i < 4; ++i) out.alpha(i) = std::clamp(q_cmd(i), -params::HB_ALPHA_LIMIT_RAD, params::HB_ALPHA_LIMIT_RAD);
-  for (int i = 0; i < 2; ++i) out.beta(i) = std::clamp(q_cmd(4 + i), -params::HB_BETA_LIMIT_RAD, params::HB_BETA_LIMIT_RAD);
-  for (int i = 0; i < 4; ++i) out.f(i) = std::clamp(q_cmd(6 + i), params::HB_F_CMD_MIN, params::HB_F_CMD_MAX);
-
-  out.wrench_cmd = W_des;
-  out.wrench_alloc = evaluateA4B2Wrench(out.f, out.beta, out.alpha);
-  out.wrench_real = W_now;
-
-  out.w_dot_des = W_dot_des;
-  out.w_dot_q = J * q_dot;
-
-  out.q_dot_primary = q_dot_primary;
-  out.q_dot_nullspace = q_dot_nullspace;
-  out.q_dot_final = q_dot;
-
-  out.primary_scale = primary_scale;
-  out.nullspace_scale = nullspace_scale;
-
-  previous_cmd = out;
-  return out;
-}
 
 }

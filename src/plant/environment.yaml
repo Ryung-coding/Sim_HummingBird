@@ -1,21 +1,4 @@
 frame: controller_z_down
 
-bounds:
-  min: [-2.5, -1.0, -2.5]
-  max: [2.5, 9.5, -0.20]
-
-# x/y/z in meters, roll/pitch/yaw in radians (controller z-down frame)
-start: {x: 0.0, y: 0.0, z: -1.0, roll: 0.0, pitch: 0.0, yaw: 1.570796}
-goal: {x: 0.0, y: 8.5, z: -1.0, roll: 0.0, pitch: 0.0, yaw: 1.570796}
-
-vehicle:
-  half_size: [0.32, 0.32, 0.16]
-
-obstacles:
-  - name: tunnel                    # obstacle name; generated boxes use _left/_right/_top/_bottom
-    type: tunnel                    # tunnel = four boxes around a rectangular opening; wall = one box
-    center: [0.0, 4.25, -1.35]     # [x, y, z] center of the outer tunnel, meters
-    size: [4.35, 3.5, 2.3]         # [x width, y length, z height] of the outer tunnel, meters
-    opening_offset: [0.0, 0.275]  # [x, z] opening-center offset from center, meters
-    opening_size: [0.90, 0.75]     # [x width, z height] of the free passage, meters
-    rgba: [0.52, 0.54, 0.57, 0.2] # [red, green, blue, opacity], each 0..1
+# Initial pose in the controller z-down frame; angles are in radians.
+start: {x: 0.0, y: -1.0, z: -0.0665, roll: 0.0, pitch: 0.0, yaw: 0.0}

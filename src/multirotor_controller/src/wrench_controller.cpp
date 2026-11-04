@@ -15,8 +15,6 @@ class WrenchController : public rclcpp::Node
 public:
   WrenchController() : rclcpp::Node("wrench_controller")
   {
-    d_compensation_ = declare_parameter<bool>("use_measured_disturbance", false);
-
     sub_cmd_ = this->create_subscription<multirotor_interfaces::msg::Cmd>("/cmd", 10, std::bind(&WrenchController::onCmd, this, std::placeholders::_1));
     const auto state_topic = declare_parameter<std::string>("state_topic", "/multirotor_state");
     sub_state_ = this->create_subscription<multirotor_interfaces::msg::MultirotorState>(state_topic, 10, std::bind(&WrenchController::onState, this, std::placeholders::_1));
@@ -35,10 +33,8 @@ public:
     vel_.setZero();
     quat_ << 1.0, 0.0, 0.0, 0.0;
     W_.setZero();
-    d_hat.setZero();
     pos_i_.setZero();
     att_i_.setZero();
-    disturbance_rms_sq_.setZero();
   }
 
 private:
@@ -63,7 +59,6 @@ private:
     vel_ << static_cast<double>(msg->vel[0]), static_cast<double>(msg->vel[1]), static_cast<double>(msg->vel[2]);
     quat_ << static_cast<double>(msg->quat[0]), static_cast<double>(msg->quat[1]), static_cast<double>(msg->quat[2]), static_cast<double>(msg->quat[3]);
     W_ << static_cast<double>(msg->w_rpy[0]), static_cast<double>(msg->w_rpy[1]), static_cast<double>(msg->w_rpy[2]);
-    d_hat << static_cast<double>(msg->disturbance_force[0]), static_cast<double>(msg->disturbance_force[1]), static_cast<double>(msg->disturbance_force[2]);
 
     have_state_ = true;
     tryPublish();
@@ -83,9 +78,6 @@ private:
 
     Eigen::Vector3d F_world = Kp.cwiseProduct(e) + Ki.cwiseProduct(pos_i_) + Kd.cwiseProduct(vel_cmd_ - vel_) + mass_ * acc_cmd_;
     F_world(2) -= mass_ * params::grav;
-
-    // Apply disturbance compensation if enabled (aplly DOB not yet implemented)
-    if (d_compensation_) F_world -= d_hat;
 
     return F_world;
   }
@@ -115,28 +107,6 @@ private:
     return M;
   }
 
-  //just a simple RMS checker
-  Eigen::Matrix<double, 6, 1> disturbanceObserver(const Eigen::Vector3d& pos_error, const Eigen::Vector3d& att_error, double dt)
-  {
-    Eigen::Matrix<double, 6, 1> error;
-    error << pos_error, att_error;
-
-    const Eigen::Matrix<double, 6, 1> error_sq = error.array().square().matrix();
-
-    if (!disturbance_observer_initialized_) 
-    {
-      disturbance_rms_sq_ = error_sq;
-      disturbance_observer_initialized_ = true;
-    } 
-    else 
-    {
-      const double alpha = 1.0 - std::exp(-dt / params::disturbance_rms_tau);
-      disturbance_rms_sq_ += alpha * (error_sq - disturbance_rms_sq_);
-    }
-
-    return disturbance_rms_sq_.cwiseMax(0.0).cwiseSqrt();
-  }
-
   void tryPublish()
   {
     if (!have_state_ || !have_cmd_) return;
@@ -157,13 +127,6 @@ private:
 
     const Eigen::Vector3d M_body = attitudeController(R, Rd, dt);
 
-    const Eigen::Vector3d pos_error = pos_cmd_ - pos_;
-    Eigen::Vector3d att_error = att_cmd_ - utils::rotToRpy(R);
-    for (int i = 0; i < 3; ++i) {
-      att_error(i) = std::atan2(std::sin(att_error(i)), std::cos(att_error(i)));
-    }
-    const Eigen::Matrix<double, 6, 1> d = disturbanceObserver(pos_error, att_error, dt);
-
     multirotor_interfaces::msg::Wrench msg;
 
     msg.force[0] = static_cast<float>(F_body(0));
@@ -174,7 +137,6 @@ private:
     msg.moment[1] = static_cast<float>(M_body(1));
     msg.moment[2] = static_cast<float>(M_body(2));
 
-    for (int i = 0; i < 6; ++i) msg.d[i] = static_cast<float>(d(i));
 
     pub_wrench_->publish(msg);
   }
@@ -198,18 +160,14 @@ private:
   Eigen::Vector3d vel_;
   Eigen::Vector4d quat_;
   Eigen::Vector3d W_;
-  Eigen::Vector3d d_hat;
 
   Eigen::Vector3d pos_i_;
   Eigen::Vector3d att_i_;
-  Eigen::Matrix<double, 6, 1> disturbance_rms_sq_;
 
   bool use_quaternion_{false};
   bool have_cmd_{false};
   bool have_state_{false};
-  bool disturbance_observer_initialized_{false};
 
-  bool d_compensation_{false};
 };
 
 int main(int argc, char** argv)

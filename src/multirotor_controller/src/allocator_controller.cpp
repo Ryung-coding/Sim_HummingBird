@@ -23,7 +23,6 @@ public:
 
     alpha_measured_.setZero();
     beta_measured_.setZero();
-    last_time_ = now();
   }
 
 private:
@@ -44,17 +43,10 @@ private:
     moment_cmd << msg->moment[0], msg->moment[1], msg->moment[2];
     force_cmd << msg->force[0], msg->force[1], msg->force[2];
 
-    const rclcpp::Time current_time = now();
-    double dt = (current_time - last_time_).seconds();
-    last_time_ = current_time;
-
-    if (!(dt > 0.0) || dt > 0.2) dt = 1.0 / static_cast<double>(params::RATE_HZ);
-
     const auto alloc = utils::allocation_a1b1(moment_cmd, force_cmd);
     // No thrust sensor: estimate applied wrench using the previous thrust command and measured servo angles.
     const auto wrench_real = utils::evaluateA4B2Wrench(last_f_cmd_, beta_measured_, alpha_measured_);
     last_f_cmd_ = alloc.f;
-    // const auto alloc = utils::allocation_a4b2(moment_cmd, force_cmd, alpha_measured_, beta_measured_, servo_read_, dt);
     multirotor_interfaces::msg::Input out;
 
     out.f[0] = alloc.f(0);
@@ -79,19 +71,7 @@ private:
       debug.wrench_cmd[i] = alloc.wrench_cmd(i);
       debug.wrench_alloc[i] = alloc.wrench_alloc(i);
       debug.wrench_real[i] = wrench_real(i);
-      debug.w_dot_des[i] = alloc.w_dot_des(i);
-      debug.w_dot_q[i] = alloc.w_dot_q(i);
     }
-
-    for (int i = 0; i < 10; ++i)
-    {
-      debug.q_dot_primary[i] = alloc.q_dot_primary(i);
-      debug.q_dot_nullspace[i] = alloc.q_dot_nullspace(i);
-      debug.q_dot_final[i] = alloc.q_dot_final(i);
-    }
-
-    debug.primary_scale = alloc.primary_scale;
-    debug.nullspace_scale = alloc.nullspace_scale;
 
     debug_publisher_->publish(debug);
 
@@ -105,11 +85,9 @@ private:
   Eigen::Vector4d last_f_cmd_ = Eigen::Vector4d::Zero();
   Eigen::Vector4d alpha_measured_;
   Eigen::Vector2d beta_measured_;
-  rclcpp::Time last_time_;
 
   bool have_state_{false};
 
-  bool servo_read_{true};
 };
 
 int main(int argc, char** argv)

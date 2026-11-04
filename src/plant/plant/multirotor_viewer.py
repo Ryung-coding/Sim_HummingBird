@@ -7,7 +7,6 @@ import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool
 from multirotor_interfaces.msg import MultirotorState, Cmd, Input, Debug
 
 from PyQt5 import QtCore, QtWidgets
@@ -176,40 +175,13 @@ class VNode(Node):
         # Wrench: t + cmd[6] + alloc[6] + real[6]
         self.buf_wrench = Ring(MAX_SAMPLES, 19)
 
-        # Wdot: t + desired[6] + J*qdot[6]
-        self.buf_wdot = Ring(MAX_SAMPLES, 13)
-
-        # qdot: t + [alpha4 beta2 thrust4]
-        self.buf_qdot_primary = Ring(MAX_SAMPLES, 11)
-        self.buf_qdot_null = Ring(MAX_SAMPLES, 11)
-        self.buf_qdot_final = Ring(MAX_SAMPLES, 11)
-
-        # t + primary_scale + nullspace_scale
-        self.buf_scale = Ring(MAX_SAMPLES, 3)
-
-        # t + wall[4] + ground[4] + KG[4] + KW[4] + dT[4] + noise[4] + force[3] + moment[3]
-        self.buf_aero = Ring(MAX_SAMPLES, 31)
-
         self.create_subscription(MultirotorState, "/multirotor_state", self._cb_state, 10)
         self.create_subscription(Cmd, "/cmd", self._cb_cmd, 10)
         self.create_subscription(Input, "/input", self._cb_input, 10)
         self.create_subscription(Debug, "/allocation_debug", self._cb_debug, 10)
 
-        self.pub_force_impulse = self.create_publisher(Bool, "/test/impulse_trigger", 1)
-        self.pub_moment_impulse = self.create_publisher(Bool, "/test/moment_impulse_trigger", 1)
-
     def _t(self):
         return self.get_clock().now().nanoseconds * 1.0e-9 - self.t0
-
-    def trigger_force_impulse(self):
-        msg = Bool()
-        msg.data = True
-        self.pub_force_impulse.publish(msg)
-
-    def trigger_moment_impulse(self):
-        msg = Bool()
-        msg.data = True
-        self.pub_moment_impulse.publish(msg)
 
     def _cb_state(self, m):
         t = self._t()
@@ -234,13 +206,6 @@ class VNode(Node):
 
             self.buf_alpha.push([t, *alpha])
             self.buf_beta.push([t, *beta])
-            wall = np.asarray(m.rotor_wall_distance, dtype=float)
-            wall[~np.isfinite(wall)] = np.nan
-            self.buf_aero.push([t, *wall, *m.rotor_ground_distance,
-                                *m.rotor_ground_gain, *m.rotor_wall_gain,
-                                *m.rotor_thrust_delta, *m.rotor_thrust_noise,
-                                *m.disturbance_force, *m.disturbance_moment])
-
     def _cb_cmd(self, m):
         t = self._t()
 
@@ -268,13 +233,7 @@ class VNode(Node):
 
         with self.lock:
             self.buf_wrench.push([t, *m.wrench_cmd, *m.wrench_alloc, *m.wrench_real])
-            self.buf_wdot.push([t, *m.w_dot_des, *m.w_dot_q])
 
-            self.buf_qdot_primary.push([t, *m.q_dot_primary])
-            self.buf_qdot_null.push([t, *m.q_dot_nullspace])
-            self.buf_qdot_final.push([t, *m.q_dot_final])
-
-            self.buf_scale.push([t, m.primary_scale, m.nullspace_scale])
 
 
 class Win(QtWidgets.QMainWindow):
@@ -288,9 +247,7 @@ class Win(QtWidgets.QMainWindow):
 
         self.plots_state = []
         self.plots_wrench = []
-        self.plots_da = []
         self.plots_act = []
-        self.plots_aero = []
 
         self.pause_buttons = []
         self.pause_labels = []
@@ -303,21 +260,15 @@ class Win(QtWidgets.QMainWindow):
 
         self.state_glw = pg.GraphicsLayoutWidget()
         self.wrench_glw = pg.GraphicsLayoutWidget()
-        self.da_glw = pg.GraphicsLayoutWidget()
         self.act_glw = pg.GraphicsLayoutWidget()
-        self.aero_glw = pg.GraphicsLayoutWidget()
 
         self.tabs.addTab(self._make_tab(self.state_glw), "State")
         self.tabs.addTab(self._make_tab(self.wrench_glw), "Wrench")
-        self.tabs.addTab(self._make_tab(self.da_glw), "Differential Allocation")
         self.tabs.addTab(self._make_tab(self.act_glw), "Actuator")
-        self.tabs.addTab(self._make_tab(self.aero_glw), "Aerodynamics")
 
         self._build_state()
         self._build_wrench()
-        self._build_da()
         self._build_actuator()
-        self._build_aero()
 
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self._update)
@@ -328,20 +279,13 @@ class Win(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(tab)
         controls = QtWidgets.QHBoxLayout()
 
-        force_button = QtWidgets.QPushButton("X Force impulse")
-        moment_button = QtWidgets.QPushButton("Pitch Moment impulse")
         pause_button = QtWidgets.QPushButton("Pause")
         pause_button.setCheckable(True)
 
         status = QtWidgets.QLabel("LIVE")
 
-        force_button.clicked.connect(self._trigger_force_impulse)
-        moment_button.clicked.connect(self._trigger_moment_impulse)
         pause_button.clicked.connect(self._toggle_pause)
 
-        controls.addWidget(force_button)
-        controls.addWidget(moment_button)
-        controls.addSpacing(25)
         controls.addWidget(pause_button)
         controls.addWidget(status)
         controls.addStretch()
@@ -353,12 +297,6 @@ class Win(QtWidgets.QMainWindow):
         layout.addWidget(glw, 1)
 
         return tab
-
-    def _trigger_force_impulse(self):
-        self.node.trigger_force_impulse()
-
-    def _trigger_moment_impulse(self):
-        self.node.trigger_moment_impulse()
 
     def _toggle_pause(self):
         self.paused = not self.paused
@@ -452,96 +390,6 @@ class Win(QtWidgets.QMainWindow):
 
         for p in self.plots_wrench[-3:]:
             p.setLabel("bottom", "time [s]")
-
-    # =========================================================
-    # Differential Allocation
-    # =========================================================
-
-    def _build_da(self):
-        moment_names = ["Mx", "My", "Mz"]
-        force_names = ["Fx", "Fy", "Fz"]
-
-        # Wdot moment
-        for i in range(3):
-            p = _mkplot(self.da_glw, 0, i, f"{moment_names[i]} dot", f"{moment_names[i]} dot [N·m/s]")
-            self.cv[f"Mdot_des{i}"] = p.plot(pen=_dash_pen("k"), name="W_dot_des")
-            self.cv[f"Mdot_q{i}"] = p.plot(pen=_pen(C_R), name="J q_dot")
-            self.plots_da.append(p)
-
-        # Wdot force
-        for i in range(3):
-            p = _mkplot(self.da_glw, 1, i, f"{force_names[i]} dot", f"{force_names[i]} dot [N/s]")
-            self.cv[f"Fdot_des{i}"] = p.plot(pen=_dash_pen("k"), name="W_dot_des")
-            self.cv[f"Fdot_q{i}"] = p.plot(pen=_pen(C_R), name="J q_dot")
-            self.plots_da.append(p)
-
-        # Primary
-        p = _mkplot(self.da_glw, 2, 0, "Primary alpha rate", "alpha dot [deg/s]")
-        for i in range(4):
-            self.cv[f"qp_a{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
-        self.plots_da.append(p)
-
-        p = _mkplot(self.da_glw, 2, 1, "Primary beta rate", "beta dot [deg/s]")
-        for i in range(2):
-            self.cv[f"qp_b{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
-        self.plots_da.append(p)
-
-        p = _mkplot(self.da_glw, 2, 2, "Primary thrust rate", "f dot [N/s]")
-        for i in range(4):
-            self.cv[f"qp_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
-        self.plots_da.append(p)
-
-        # Nullspace
-        p = _mkplot(self.da_glw, 3, 0, "Nullspace alpha rate", "alpha dot [deg/s]")
-        for i in range(4):
-            self.cv[f"qn_a{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
-        self.plots_da.append(p)
-
-        p = _mkplot(self.da_glw, 3, 1, "Nullspace beta rate", "beta dot [deg/s]")
-        for i in range(2):
-            self.cv[f"qn_b{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
-        self.plots_da.append(p)
-
-        p = _mkplot(self.da_glw, 3, 2, "Nullspace thrust rate", "f dot [N/s]")
-        for i in range(4):
-            self.cv[f"qn_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
-        self.plots_da.append(p)
-
-        # Final
-        p = _mkplot(self.da_glw, 4, 0, "Final alpha rate", "alpha dot [deg/s]")
-        for i in range(4):
-            self.cv[f"qf_a{i}"] = p.plot(pen=_pen(C4[i]), name=f"α{i+1}")
-        self.plots_da.append(p)
-
-        p = _mkplot(self.da_glw, 4, 1, "Final beta rate", "beta dot [deg/s]")
-        for i in range(2):
-            self.cv[f"qf_b{i}"] = p.plot(pen=_pen(C4[i]), name=f"β{i+1}")
-        self.plots_da.append(p)
-
-        p = _mkplot(self.da_glw, 4, 2, "Final thrust rate", "f dot [N/s]")
-        for i in range(4):
-            self.cv[f"qf_f{i}"] = p.plot(pen=_pen(C4[i]), name=f"f{i+1}")
-        self.plots_da.append(p)
-
-        # Rate scaling
-        p = _mkplot(self.da_glw, 5, 0, "Rate scaling", "scale / reduction [-]", colspan=3)
-        self.cv["primary_scale"] = p.plot(pen=_pen(C_R), name="primary scale")
-        self.cv["null_scale"] = p.plot(pen=_pen(C_B), name="null scale")
-        self.cv["primary_cut"] = p.plot(pen=_dash_pen(C_R), name="1-primary")
-        self.cv["null_cut"] = p.plot(pen=_dash_pen(C_B), name="1-null")
-        self.plots_da.append(p)
-
-        for p in self.plots_da[1:]:
-            p.setXLink(self.plots_da[0])
-
-        for p in self.plots_da[:-1]:
-            p.hideAxis("bottom")
-
-        self.plots_da[-1].setLabel("bottom", "time [s]")
-
-    # =========================================================
-    # Actuator
-    # =========================================================
 
     def _build_actuator(self):
         # Alpha measured + command
@@ -643,39 +491,6 @@ class Win(QtWidgets.QMainWindow):
 
         self.plots_act[-1].setLabel("bottom", "time [s]")
 
-    # =========================================================
-    # Aerodynamics
-    # =========================================================
-
-    def _build_aero(self):
-        plots = [
-            ("Rotor-wall distance", "x [m]", "wall", 4),
-            ("Rotor-ground distance", "z [m]", "ground", 4),
-            ("Ground effect", "KG - 1 [%]", "kg", 4),
-            ("Wall effect", "KW - 1 [%]", "kw", 4),
-            ("Thrust change", "dT [N]", "delta", 4),
-            ("Axial noise", "noise [N]", "noise", 4),
-            ("Total rotor disturbance", "dT + noise [N]", "total", 4),
-            ("Applied disturbance force", "F [N]", "force", 3),
-            ("Applied disturbance moment", "M [N*m]", "moment", 3),
-        ]
-
-        for j, (title, ylabel, key, count) in enumerate(plots):
-            p = _mkplot(self.aero_glw, j // 3, j % 3, title, ylabel)
-            for i in range(count):
-                name = f"R{i+1}" if count == 4 else ["x", "y", "z"][i]
-                self.cv[f"aero_{key}{i}"] = p.plot(pen=_pen(C4[i]), name=name)
-            self.plots_aero.append(p)
-
-        for p in self.plots_aero[1:]:
-            p.setXLink(self.plots_aero[0])
-
-        for p in self.plots_aero[:-3]:
-            p.hideAxis("bottom")
-
-        for p in self.plots_aero[-3:]:
-            p.setLabel("bottom", "time [s]")
-
     def _update_xy_vectors(self, alpha_data, beta_data, curves):
         if not alpha_data.shape[0] or not beta_data.shape[0]:
             return
@@ -717,20 +532,11 @@ class Win(QtWidgets.QMainWindow):
             df = nd.buf_f_cmd.get()
 
             dwr = nd.buf_wrench.get()
-            dwd = nd.buf_wdot.get()
-
-            dqp = nd.buf_qdot_primary.get()
-            dqn = nd.buf_qdot_null.get()
-            dqf = nd.buf_qdot_final.get()
-
-            ds = nd.buf_scale.get()
-            aero = nd.buf_aero.get()
-
         data_all = [
             dp, dv, da, dpc,
             dr, domega, dac,
             dalpha, dbeta, dalpha_c, dbeta_c, df,
-            dwr, dwd, dqp, dqn, dqf, ds, aero
+            dwr
         ]
 
         tn = 0.0
@@ -765,15 +571,6 @@ class Win(QtWidgets.QMainWindow):
         df = tr(df)
 
         dwr = tr(dwr)
-        dwd = tr(dwd)
-
-        dqp = tr(dqp)
-        dqn = tr(dqn)
-        dqf = tr(dqf)
-
-        ds = tr(ds)
-        aero = tr(aero)
-
         cv = self.cv
 
         # -----------------------------------------------------
@@ -841,93 +638,6 @@ class Win(QtWidgets.QMainWindow):
                 cv[f"Fe_ar{i}"].setData(t, Walloc[:, fi] - Wreal[:, fi])
 
         # -----------------------------------------------------
-        # Wdot
-        # -----------------------------------------------------
-
-        if dwd.shape[0]:
-            t = dwd[:, 0]
-
-            Wdot_des = dwd[:, 1:7]
-            Wdot_q = dwd[:, 7:13]
-
-            for i in range(3):
-                cv[f"Mdot_des{i}"].setData(t, Wdot_des[:, i])
-                cv[f"Mdot_q{i}"].setData(t, Wdot_q[:, i])
-
-                cv[f"Fdot_des{i}"].setData(t, Wdot_des[:, 3+i])
-                cv[f"Fdot_q{i}"].setData(t, Wdot_q[:, 3+i])
-
-        # -----------------------------------------------------
-        # qdot primary
-        # -----------------------------------------------------
-
-        if dqp.shape[0]:
-            t = dqp[:, 0]
-
-            alpha = dqp[:, 1:5] * RAD2DEG
-            beta = dqp[:, 5:7] * RAD2DEG
-            thrust = dqp[:, 7:11]
-
-            for i in range(4):
-                cv[f"qp_a{i}"].setData(t, alpha[:, i])
-                cv[f"qp_f{i}"].setData(t, thrust[:, i])
-
-            for i in range(2):
-                cv[f"qp_b{i}"].setData(t, beta[:, i])
-
-        # -----------------------------------------------------
-        # qdot nullspace
-        # -----------------------------------------------------
-
-        if dqn.shape[0]:
-            t = dqn[:, 0]
-
-            alpha = dqn[:, 1:5] * RAD2DEG
-            beta = dqn[:, 5:7] * RAD2DEG
-            thrust = dqn[:, 7:11]
-
-            for i in range(4):
-                cv[f"qn_a{i}"].setData(t, alpha[:, i])
-                cv[f"qn_f{i}"].setData(t, thrust[:, i])
-
-            for i in range(2):
-                cv[f"qn_b{i}"].setData(t, beta[:, i])
-
-        # -----------------------------------------------------
-        # qdot final
-        # -----------------------------------------------------
-
-        if dqf.shape[0]:
-            t = dqf[:, 0]
-
-            alpha = dqf[:, 1:5] * RAD2DEG
-            beta = dqf[:, 5:7] * RAD2DEG
-            thrust = dqf[:, 7:11]
-
-            for i in range(4):
-                cv[f"qf_a{i}"].setData(t, alpha[:, i])
-                cv[f"qf_f{i}"].setData(t, thrust[:, i])
-
-            for i in range(2):
-                cv[f"qf_b{i}"].setData(t, beta[:, i])
-
-        # -----------------------------------------------------
-        # Scale
-        # -----------------------------------------------------
-
-        if ds.shape[0]:
-            t = ds[:, 0]
-
-            primary = ds[:, 1]
-            nullspace = ds[:, 2]
-
-            cv["primary_scale"].setData(t, primary)
-            cv["null_scale"].setData(t, nullspace)
-
-            cv["primary_cut"].setData(t, 1.0 - primary)
-            cv["null_cut"].setData(t, 1.0 - nullspace)
-
-        # -----------------------------------------------------
         # Actuator
         # -----------------------------------------------------
 
@@ -955,24 +665,6 @@ class Win(QtWidgets.QMainWindow):
         self._update_xy_vectors(dalpha_c, dbeta_c, self.xy_cmd)
 
         # -----------------------------------------------------
-        # Aerodynamics
-        # -----------------------------------------------------
-
-        if aero.shape[0]:
-            t = aero[:, 0]
-            for i in range(4):
-                cv[f"aero_wall{i}"].setData(t, aero[:, 1+i])
-                cv[f"aero_ground{i}"].setData(t, aero[:, 5+i])
-                cv[f"aero_kg{i}"].setData(t, 100.0 * (aero[:, 9+i] - 1.0))
-                cv[f"aero_kw{i}"].setData(t, 100.0 * (aero[:, 13+i] - 1.0))
-                cv[f"aero_delta{i}"].setData(t, aero[:, 17+i])
-                cv[f"aero_noise{i}"].setData(t, aero[:, 21+i])
-                cv[f"aero_total{i}"].setData(t, aero[:, 17+i] + aero[:, 21+i])
-            for i in range(3):
-                cv[f"aero_force{i}"].setData(t, aero[:, 25+i])
-                cv[f"aero_moment{i}"].setData(t, aero[:, 28+i])
-
-        # -----------------------------------------------------
         # Auto-follow
         # -----------------------------------------------------
 
@@ -982,14 +674,9 @@ class Win(QtWidgets.QMainWindow):
         if self.plots_wrench:
             self.plots_wrench[0].setXRange(tl, tn, padding=0)
 
-        if self.plots_da:
-            self.plots_da[0].setXRange(tl, tn, padding=0)
-
         if self.plots_act:
             self.plots_act[0].setXRange(tl, tn, padding=0)
 
-        if self.plots_aero:
-            self.plots_aero[0].setXRange(tl, tn, padding=0)
 
 
 def _spin(node):

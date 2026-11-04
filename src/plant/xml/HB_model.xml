@@ -1,3 +1,4 @@
+
 <mujoco model="HB_model">
   <compiler angle="radian" meshdir="mesh" autolimits="true"/>
   <option timestep="0.001" gravity="0 0 -9.81" integrator="implicitfast" iterations="50" noslip_iterations="10"/>
@@ -29,9 +30,9 @@
         <geom name="arm1_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
         <body name="BLDC1" pos="0 0.175 0">
           <joint name="joint_alpha1" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
-          <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
-          <geom name="prop1_geom" type="mesh" mesh="prop_cw_mesh" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
-          <site name="prop1_site" pos="0 0 0" size="0.004" type="sphere" rgba="1 0 0 0"/>
+          <inertial pos="0 0 0.05" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
+          <geom name="prop1_geom" type="mesh" mesh="prop_cw_mesh" pos="0 0 -0.05" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
+          <site name="prop1_site" pos="0 0 -0.05" size="0.004" type="sphere" rgba="1 0 0 0"/>
         </body>
       </body>
 
@@ -41,9 +42,9 @@
         <geom name="arm4_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 0" contype="0" conaffinity="0"/>
         <body name="BLDC4" pos="0 -0.175 0">
           <joint name="joint_alpha4" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
-          <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
-          <geom name="prop4_geom" type="mesh" mesh="prop_cw_mesh" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
-          <site name="prop4_site" pos="0 0 0" size="0.004" type="sphere" rgba="1 0 0 0"/>
+          <inertial pos="0 0 0.05" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
+          <geom name="prop4_geom" type="mesh" mesh="prop_cw_mesh" pos="0 0 -0.05" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
+          <site name="prop4_site" pos="0 0 -0.05" size="0.004" type="sphere" rgba="1 0 0 0"/>
         </body>
       </body>
 
@@ -53,9 +54,9 @@
         <geom name="arm2_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 0" contype="0" conaffinity="0"/>
         <body name="BLDC2" pos="0 0.175 0">
           <joint name="joint_alpha2" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
-          <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
-          <geom name="prop2_geom" type="mesh" mesh="prop_cw_mesh" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
-          <site name="prop2_site" pos="0 0 0" size="0.004" type="sphere" rgba="1 0 0 0"/>
+          <inertial pos="0 0 0.05" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
+          <geom name="prop2_geom" type="mesh" mesh="prop_cw_mesh" pos="0 0 -0.05" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
+          <site name="prop2_site" pos="0 0 -0.05" size="0.004" type="sphere" rgba="1 0 0 0"/>
         </body>
       </body>
 
@@ -65,9 +66,9 @@
         <geom name="arm3_geom" type="mesh" mesh="shaft_mesh" euler="3.141592653589793 0 0" rgba="0.01 0.01 0.01 1" contype="0" conaffinity="0"/>
         <body name="BLDC3" pos="0 -0.175 0">
           <joint name="joint_alpha3" type="hinge" axis="1 0 0" pos="0 0 0" range="-0.5235987756 0.5235987756" limited="true" damping="0.25" armature="0.006"/>
-          <inertial pos="0 0 0" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
-          <geom name="prop3_geom" type="mesh" mesh="prop_cw_mesh" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
-          <site name="prop3_site" pos="0 0 0" size="0.004" type="sphere" rgba="1 0 0 0"/>
+          <inertial pos="0 0 0.05" quat="1 0 0 0" mass="0.035" diaginertia="0.00005 0.00005 0.00008"/>
+          <geom name="prop3_geom" type="mesh" mesh="prop_cw_mesh" pos="0 0 -0.05" rgba="0.10 0.12 0.14 1" contype="0" conaffinity="0"/>
+          <site name="prop3_site" pos="0 0 -0.05" size="0.004" type="sphere" rgba="1 0 0 0"/>
         </body>
       </body>
     </body>
